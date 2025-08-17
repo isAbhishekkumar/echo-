@@ -229,13 +229,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     "VIDEO_M3U8",
                     0,
                     "Video M3U8",
-                    mapOf("url" to hlsUrl, "videoId" to track.id)
+                    mapOf("videoId" to track.id)
                 ).takeIf { !isMusic && showVideos },
                 Streamable.server(
                     "AUDIO_MP3",
                     0,
                     "Audio MP3",
-                    audioFiles.toMutableMap().apply { put("videoId", track.id) }
+                    mutableMapOf<String, String>().apply { put("videoId", track.id) }
                 ).takeIf { audioFiles.isNotEmpty() },
             ).let { if (preferVideos) it else it.reversed() },
             plays = video.videoDetails.viewCount?.toLongOrNull()
