@@ -115,13 +115,18 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     // Ensure visitor ID is initialized before any API calls
     private suspend fun ensureVisitorId() {
         try {
+            println("DEBUG: Checking visitor ID, current: ${api.visitor_id}")
             if (api.visitor_id == null) {
+                println("DEBUG: Getting new visitor ID")
                 api.visitor_id = visitorEndpoint.getVisitorId()
+                println("DEBUG: Got visitor ID: ${api.visitor_id}")
+            } else {
+                println("DEBUG: Visitor ID already exists: ${api.visitor_id}")
             }
         } catch (e: Exception) {
+            println("DEBUG: Failed to initialize visitor ID: ${e.message}")
             // If visitor ID initialization fails, try to continue without it
             // Some endpoints might work without visitor ID
-            println("Warning: Failed to initialize visitor ID: ${e.message}")
         }
     }
     private val thumbnailQuality
@@ -194,23 +199,71 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 
                 println("DEBUG: Refreshing HLS URL for videoId: ${streamable.extras["videoId"]}")
                 
-                // Refresh the HLS URL by getting fresh video data
-                val (video, _) = videoEndpoint.getVideo(true, streamable.extras["videoId"]!!)
-                val hlsManifestUrl = video.streamingData.hlsManifestUrl!!
-                
-                println("DEBUG: Got fresh HLS URL: $hlsManifestUrl")
-                
-                // Add cache-busting parameter
-                val cacheBuster = System.currentTimeMillis()
-                val freshUrl = if (hlsManifestUrl.contains("?")) {
-                    "$hlsManifestUrl&cachebuster=$cacheBuster"
-                } else {
-                    "$hlsManifestUrl?cachebuster=$cacheBuster"
+                // Try multiple approaches to get fresh URLs
+                try {
+                    // First attempt: Get fresh video data
+                    val (video, _) = videoEndpoint.getVideo(true, streamable.extras["videoId"]!!)
+                    val hlsManifestUrl = video.streamingData.hlsManifestUrl!!
+                    
+                    println("DEBUG: Got fresh HLS URL: $hlsManifestUrl")
+                    
+                    // Add cache-busting parameter
+                    val cacheBuster = System.currentTimeMillis()
+                    val freshUrl = if (hlsManifestUrl.contains("?")) {
+                        "$hlsManifestUrl&cachebuster=$cacheBuster"
+                    } else {
+                        "$hlsManifestUrl?cachebuster=$cacheBuster"
+                    }
+                    
+                    println("DEBUG: Final URL with cache buster: $freshUrl")
+                    
+                    freshUrl.toServerMedia(type = Streamable.SourceType.HLS, isVideo = true)
+                } catch (e: Exception) {
+                    println("DEBUG: First attempt failed, trying second approach: ${e.message}")
+                    
+                    // Second attempt: Try to get video data with different parameters
+                    try {
+                        val (video2, _) = videoEndpoint.getVideo(false, streamable.extras["videoId"]!!)
+                        val hlsManifestUrl2 = video2.streamingData.hlsManifestUrl!!
+                        
+                        println("DEBUG: Second attempt HLS URL: $hlsManifestUrl2")
+                        
+                        // Add cache-busting parameter
+                        val cacheBuster2 = System.currentTimeMillis() + 1000 // Different timestamp
+                        val freshUrl2 = if (hlsManifestUrl2.contains("?")) {
+                            "$hlsManifestUrl2&cachebuster=$cacheBuster2"
+                        } else {
+                            "$hlsManifestUrl2?cachebuster=$cacheBuster2"
+                        }
+                        
+                        println("DEBUG: Second attempt final URL: $freshUrl2")
+                        
+                        freshUrl2.toServerMedia(type = Streamable.SourceType.HLS, isVideo = true)
+                    } catch (e2: Exception) {
+                        println("DEBUG: Second attempt failed, trying third approach with reset visitor ID: ${e2.message}")
+                        
+                        // Third attempt: Reset visitor ID and try again
+                        api.visitor_id = null
+                        ensureVisitorId()
+                        
+                        val (video3, _) = videoEndpoint.getVideo(true, streamable.extras["videoId"]!!)
+                        val hlsManifestUrl3 = video3.streamingData.hlsManifestUrl!!
+                        
+                        println("DEBUG: Third attempt HLS URL: $hlsManifestUrl3")
+                        
+                        // Add cache-busting parameter
+                        val cacheBuster3 = System.currentTimeMillis() + 3000 // Different timestamp
+                        val freshUrl3 = if (hlsManifestUrl3.contains("?")) {
+                            "$hlsManifestUrl3&cachebuster=$cacheBuster3"
+                        } else {
+                            "$hlsManifestUrl3?cachebuster=$cacheBuster3"
+                        }
+                        
+                        println("DEBUG: Third attempt final URL: $freshUrl3")
+                        
+                        freshUrl3.toServerMedia(type = Streamable.SourceType.HLS, isVideo = true)
+                    }
                 }
-                
-                println("DEBUG: Final URL with cache buster: $freshUrl")
-                
-                freshUrl.toServerMedia(type = Streamable.SourceType.HLS, isVideo = true)
             }
 
             "AUDIO_MP3" -> {
@@ -219,36 +272,118 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 
                 println("DEBUG: Refreshing audio URLs for videoId: ${streamable.extras["videoId"]}")
                 
-                // Refresh audio URLs by getting fresh video data
-                val (video, _) = videoEndpoint.getVideo(true, streamable.extras["videoId"]!!)
-                val audioFiles = video.streamingData.adaptiveFormats.mapNotNull {
-                    if (!it.mimeType.contains("audio")) return@mapNotNull null
-                    val originalUrl = it.url!!
+                // Try multiple approaches to get fresh URLs
+                try {
+                    // First attempt: Get fresh video data
+                    val (video, _) = videoEndpoint.getVideo(true, streamable.extras["videoId"]!!)
+                    val audioFiles = video.streamingData.adaptiveFormats.mapNotNull {
+                        if (!it.mimeType.contains("audio")) return@mapNotNull null
+                        val originalUrl = it.url!!
+                        
+                        // Add cache-busting parameter
+                        val cacheBuster = System.currentTimeMillis()
+                        val freshUrl = if (originalUrl.contains("?")) {
+                            "$originalUrl&cachebuster=$cacheBuster"
+                        } else {
+                            "$originalUrl?cachebuster=$cacheBuster"
+                        }
+                        
+                        println("DEBUG: Audio URL ${it.audioSampleRate}Hz: $freshUrl")
+                        
+                        it.audioSampleRate.toString() to freshUrl
+                    }.toMap()
                     
-                    // Add cache-busting parameter
-                    val cacheBuster = System.currentTimeMillis()
-                    val freshUrl = if (originalUrl.contains("?")) {
-                        "$originalUrl&cachebuster=$cacheBuster"
-                    } else {
-                        "$originalUrl?cachebuster=$cacheBuster"
-                    }
+                    println("DEBUG: First attempt total audio formats: ${audioFiles.size}")
                     
-                    println("DEBUG: Audio URL ${it.audioSampleRate}Hz: $freshUrl")
-                    
-                    it.audioSampleRate.toString() to freshUrl
-                }.toMap()
-                
-                println("DEBUG: Total audio formats: ${audioFiles.size}")
-                
-                Streamable.Media.Server(
-                    audioFiles.map { (quality, url) ->
-                        Streamable.Source.Http(
-                            url.toRequest(),
-                            quality = quality.toIntOrNull() ?: 0
+                    if (audioFiles.isNotEmpty()) {
+                        Streamable.Media.Server(
+                            audioFiles.map { (quality, url) ->
+                                Streamable.Source.Http(
+                                    url.toRequest(),
+                                    quality = quality.toIntOrNull() ?: 0
+                                )
+                            },
+                            false
                         )
-                    },
-                    false
-                )
+                    } else {
+                        throw Exception("No audio formats found in first attempt")
+                    }
+                } catch (e: Exception) {
+                    println("DEBUG: First attempt failed, trying second approach: ${e.message}")
+                    
+                    // Second attempt: Try to get video data with different parameters
+                    try {
+                        val (video2, _) = videoEndpoint.getVideo(false, streamable.extras["videoId"]!!)
+                        val audioFiles2 = video2.streamingData.adaptiveFormats.mapNotNull {
+                            if (!it.mimeType.contains("audio")) return@mapNotNull null
+                            val originalUrl = it.url!!
+                            
+                            // Add cache-busting parameter
+                            val cacheBuster = System.currentTimeMillis() + 2000 // Different timestamp
+                            val freshUrl = if (originalUrl.contains("?")) {
+                                "$originalUrl&cachebuster=$cacheBuster"
+                            } else {
+                                "$originalUrl?cachebuster=$cacheBuster"
+                            }
+                            
+                            println("DEBUG: Second attempt Audio URL ${it.audioSampleRate}Hz: $freshUrl")
+                            
+                            it.audioSampleRate.toString() to freshUrl
+                        }.toMap()
+                        
+                        println("DEBUG: Second attempt total audio formats: ${audioFiles2.size}")
+                        
+                        if (audioFiles2.isNotEmpty()) {
+                            Streamable.Media.Server(
+                                audioFiles2.map { (quality, url) ->
+                                    Streamable.Source.Http(
+                                        url.toRequest(),
+                                        quality = quality.toIntOrNull() ?: 0
+                                    )
+                                },
+                                false
+                            )
+                        } else {
+                            throw Exception("No audio formats found in second attempt")
+                        }
+                    } catch (e2: Exception) {
+                        println("DEBUG: Second attempt failed, trying third approach with reset visitor ID: ${e2.message}")
+                        
+                        // Third attempt: Reset visitor ID and try again
+                        api.visitor_id = null
+                        ensureVisitorId()
+                        
+                        val (video3, _) = videoEndpoint.getVideo(true, streamable.extras["videoId"]!!)
+                        val audioFiles3 = video3.streamingData.adaptiveFormats.mapNotNull {
+                            if (!it.mimeType.contains("audio")) return@mapNotNull null
+                            val originalUrl = it.url!!
+                            
+                            // Add cache-busting parameter
+                            val cacheBuster = System.currentTimeMillis() + 4000 // Different timestamp
+                            val freshUrl = if (originalUrl.contains("?")) {
+                                "$originalUrl&cachebuster=$cacheBuster"
+                            } else {
+                                "$originalUrl?cachebuster=$cacheBuster"
+                            }
+                            
+                            println("DEBUG: Third attempt Audio URL ${it.audioSampleRate}Hz: $freshUrl")
+                            
+                            it.audioSampleRate.toString() to freshUrl
+                        }.toMap()
+                        
+                        println("DEBUG: Third attempt total audio formats: ${audioFiles3.size}")
+                        
+                        Streamable.Media.Server(
+                            audioFiles3.map { (quality, url) ->
+                                Streamable.Source.Http(
+                                    url.toRequest(),
+                                    quality = quality.toIntOrNull() ?: 0
+                                )
+                            },
+                            false
+                        )
+                    }
+                }
             }
 
             else -> throw IllegalArgumentException()
