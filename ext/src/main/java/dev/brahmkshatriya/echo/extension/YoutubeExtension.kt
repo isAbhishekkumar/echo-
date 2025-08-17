@@ -174,12 +174,19 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     ): Streamable.Media = when (streamable.type) {
         Streamable.MediaType.Server -> when (streamable.id) {
             "VIDEO_M3U8" -> {
-                val hlsManifestUrl = streamable.extras["url"]!!
+                // Refresh the HLS URL by getting fresh video data
+                val (video, _) = videoEndpoint.getVideo(true, streamable.extras["videoId"]!!)
+                val hlsManifestUrl = video.streamingData.hlsManifestUrl!!
                 hlsManifestUrl.toServerMedia(type = Streamable.SourceType.HLS, isVideo = true)
             }
 
             "AUDIO_MP3" -> {
-                val audioFiles = streamable.extras
+                // Refresh audio URLs by getting fresh video data
+                val (video, _) = videoEndpoint.getVideo(true, streamable.extras["videoId"]!!)
+                val audioFiles = video.streamingData.adaptiveFormats.mapNotNull {
+                    if (!it.mimeType.contains("audio")) return@mapNotNull null
+                    it.audioSampleRate.toString() to it.url!!
+                }.toMap()
                 Streamable.Media.Server(
                     audioFiles.map { (quality, url) ->
                         Streamable.Source.Http(
@@ -222,13 +229,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     "VIDEO_M3U8",
                     0,
                     "Video M3U8",
-                    mapOf("url" to hlsUrl)
+                    mapOf("url" to hlsUrl, "videoId" to track.id)
                 ).takeIf { !isMusic && showVideos },
                 Streamable.server(
                     "AUDIO_MP3",
                     0,
                     "Audio MP3",
-                    audioFiles
+                    audioFiles.toMutableMap().apply { put("videoId", track.id) }
                 ).takeIf { audioFiles.isNotEmpty() },
             ).let { if (preferVideos) it else it.reversed() },
             plays = video.videoDetails.viewCount?.toLongOrNull()
