@@ -207,17 +207,27 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     
                     println("DEBUG: Got fresh HLS URL: $hlsManifestUrl")
                     
-                    // Add cache-busting parameter
-                    val cacheBuster = System.currentTimeMillis()
+                    // Add multiple cache-busting parameters to be more aggressive
+                    val timestamp = System.currentTimeMillis()
+                    val random = java.util.Random().nextInt(1000000)
                     val freshUrl = if (hlsManifestUrl.contains("?")) {
-                        "$hlsManifestUrl&cachebuster=$cacheBuster"
+                        "$hlsManifestUrl&cachebuster=$timestamp&rand=$random&expire=$timestamp"
                     } else {
-                        "$hlsManifestUrl?cachebuster=$cacheBuster"
+                        "$hlsManifestUrl?cachebuster=$timestamp&rand=$random&expire=$timestamp"
                     }
                     
-                    println("DEBUG: Final URL with cache buster: $freshUrl")
+                    println("DEBUG: Final URL with cache busters: $freshUrl")
                     
-                    freshUrl.toServerMedia(type = Streamable.SourceType.HLS, isVideo = true)
+                    // Create Streamable.Media.Server directly instead of using toServerMedia
+                    Streamable.Media.Server(
+                        listOf(
+                            Streamable.Source.Http(
+                                freshUrl.toRequest(),
+                                quality = 0
+                            )
+                        ),
+                        true // isLive = true for HLS
+                    )
                 } catch (e: Exception) {
                     println("DEBUG: First attempt failed, trying second approach: ${e.message}")
                     
@@ -228,17 +238,27 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         
                         println("DEBUG: Second attempt HLS URL: $hlsManifestUrl2")
                         
-                        // Add cache-busting parameter
-                        val cacheBuster2 = System.currentTimeMillis() + 1000 // Different timestamp
+                        // Add different cache-busting parameters
+                        val timestamp2 = System.currentTimeMillis() + 2000
+                        val random2 = java.util.Random().nextInt(1000000)
                         val freshUrl2 = if (hlsManifestUrl2.contains("?")) {
-                            "$hlsManifestUrl2&cachebuster=$cacheBuster2"
+                            "$hlsManifestUrl2&cachebuster=$timestamp2&rand=$random2&expire=$timestamp2"
                         } else {
-                            "$hlsManifestUrl2?cachebuster=$cacheBuster2"
+                            "$hlsManifestUrl2?cachebuster=$timestamp2&rand=$random2&expire=$timestamp2"
                         }
                         
                         println("DEBUG: Second attempt final URL: $freshUrl2")
                         
-                        freshUrl2.toServerMedia(type = Streamable.SourceType.HLS, isVideo = true)
+                        // Create Streamable.Media.Server directly
+                        Streamable.Media.Server(
+                            listOf(
+                                Streamable.Source.Http(
+                                    freshUrl2.toRequest(),
+                                    quality = 0
+                                )
+                            ),
+                            true
+                        )
                     } catch (e2: Exception) {
                         println("DEBUG: Second attempt failed, trying third approach with reset visitor ID: ${e2.message}")
                         
@@ -251,17 +271,27 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         
                         println("DEBUG: Third attempt HLS URL: $hlsManifestUrl3")
                         
-                        // Add cache-busting parameter
-                        val cacheBuster3 = System.currentTimeMillis() + 3000 // Different timestamp
+                        // Add yet different cache-busting parameters
+                        val timestamp3 = System.currentTimeMillis() + 4000
+                        val random3 = java.util.Random().nextInt(1000000)
                         val freshUrl3 = if (hlsManifestUrl3.contains("?")) {
-                            "$hlsManifestUrl3&cachebuster=$cacheBuster3"
+                            "$hlsManifestUrl3&cachebuster=$timestamp3&rand=$random3&expire=$timestamp3"
                         } else {
-                            "$hlsManifestUrl3?cachebuster=$cacheBuster3"
+                            "$hlsManifestUrl3?cachebuster=$timestamp3&rand=$random3&expire=$timestamp3"
                         }
                         
                         println("DEBUG: Third attempt final URL: $freshUrl3")
                         
-                        freshUrl3.toServerMedia(type = Streamable.SourceType.HLS, isVideo = true)
+                        // Create Streamable.Media.Server directly
+                        Streamable.Media.Server(
+                            listOf(
+                                Streamable.Source.Http(
+                                    freshUrl3.toRequest(),
+                                    quality = 0
+                                )
+                            ),
+                            true
+                        )
                     }
                 }
             }
@@ -280,12 +310,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         if (!it.mimeType.contains("audio")) return@mapNotNull null
                         val originalUrl = it.url!!
                         
-                        // Add cache-busting parameter
-                        val cacheBuster = System.currentTimeMillis()
+                        // Add multiple cache-busting parameters to be more aggressive
+                        val timestamp = System.currentTimeMillis()
+                        val random = java.util.Random().nextInt(1000000)
                         val freshUrl = if (originalUrl.contains("?")) {
-                            "$originalUrl&cachebuster=$cacheBuster"
+                            "$originalUrl&cachebuster=$timestamp&rand=$random&expire=$timestamp"
                         } else {
-                            "$originalUrl?cachebuster=$cacheBuster"
+                            "$originalUrl?cachebuster=$timestamp&rand=$random&expire=$timestamp"
                         }
                         
                         println("DEBUG: Audio URL ${it.audioSampleRate}Hz: $freshUrl")
@@ -318,12 +349,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             if (!it.mimeType.contains("audio")) return@mapNotNull null
                             val originalUrl = it.url!!
                             
-                            // Add cache-busting parameter
-                            val cacheBuster = System.currentTimeMillis() + 2000 // Different timestamp
+                            // Add different cache-busting parameters
+                            val timestamp2 = System.currentTimeMillis() + 2000
+                            val random2 = java.util.Random().nextInt(1000000)
                             val freshUrl = if (originalUrl.contains("?")) {
-                                "$originalUrl&cachebuster=$cacheBuster"
+                                "$originalUrl&cachebuster=$timestamp2&rand=$random2&expire=$timestamp2"
                             } else {
-                                "$originalUrl?cachebuster=$cacheBuster"
+                                "$originalUrl?cachebuster=$timestamp2&rand=$random2&expire=$timestamp2"
                             }
                             
                             println("DEBUG: Second attempt Audio URL ${it.audioSampleRate}Hz: $freshUrl")
@@ -358,12 +390,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             if (!it.mimeType.contains("audio")) return@mapNotNull null
                             val originalUrl = it.url!!
                             
-                            // Add cache-busting parameter
-                            val cacheBuster = System.currentTimeMillis() + 4000 // Different timestamp
+                            // Add yet different cache-busting parameters
+                            val timestamp3 = System.currentTimeMillis() + 4000
+                            val random3 = java.util.Random().nextInt(1000000)
                             val freshUrl = if (originalUrl.contains("?")) {
-                                "$originalUrl&cachebuster=$cacheBuster"
+                                "$originalUrl&cachebuster=$timestamp3&rand=$random3&expire=$timestamp3"
                             } else {
-                                "$originalUrl?cachebuster=$cacheBuster"
+                                "$originalUrl?cachebuster=$timestamp3&rand=$random3&expire=$timestamp3"
                             }
                             
                             println("DEBUG: Third attempt Audio URL ${it.audioSampleRate}Hz: $freshUrl")
