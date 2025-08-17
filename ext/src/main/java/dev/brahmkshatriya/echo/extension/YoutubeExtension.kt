@@ -191,8 +191,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     override suspend fun loadStreamableMedia(
         streamable: Streamable, isDownload: Boolean
-    ): Streamable.Media = when (streamable.type) {
-        Streamable.MediaType.Server -> when (streamable.id) {
+    ): Streamable.Media {
+        return when (streamable.type) {
+            Streamable.MediaType.Server -> when (streamable.id) {
             "VIDEO_M3U8" -> {
                 // Ensure visitor ID is initialized
                 ensureVisitorId()
@@ -232,16 +233,8 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         
                         println("DEBUG: Final URL on attempt $attempt: $freshUrl")
                         
-                        // Create Streamable.Media.Server directly
-                        return Streamable.Media.Server(
-                            listOf(
-                                Streamable.Source.Http(
-                                    freshUrl.toRequest(),
-                                    quality = 0
-                                )
-                            ),
-                            true
-                        )
+                        // Use toServerMedia converter as requested
+                        return freshUrl.toServerMedia(type = Streamable.SourceType.HLS, isVideo = true)
                         
                     } catch (e: Exception) {
                         lastError = e
@@ -335,7 +328,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
             else -> throw IllegalArgumentException()
         }
-
+        }
         else -> throw IllegalArgumentException()
     }
 
