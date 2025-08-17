@@ -257,7 +257,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         }
 
                         val (video, _) = videoEndpoint.getVideo(useDifferentParams, videoId)
-                        val isLive = video.videoDetails.isLiveContent == true
 
                         val sources = mutableListOf<Streamable.Source.Http>()
 
@@ -277,7 +276,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             val mime = fmt.mimeType
                             val url = fmt.url
                             if (mime != null && mime.contains("audio") && url != null) {
-                                val q = fmt.audioSampleRate?.toIntOrNull() ?: 48000
+                                val q = (fmt.audioSampleRate?.toString()?.toIntOrNull()) ?: 48000
                                 sources.add(
                                     Streamable.Source.Http(
                                         url.toRequest(),
@@ -292,7 +291,8 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             throw IllegalStateException("No playable sources found")
                         }
 
-                        Streamable.Media.Server(deduped, isLive)
+                        // Second parameter by position (boolean) to match API signature
+                        Streamable.Media.Server(deduped, false)
                     }
                     result
                 }
@@ -302,25 +302,17 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     val videoId = streamable.extras["videoId"]!!
                     log("Loading HLS for $videoId")
 
-                    var visitorReset = false
                     retry(times = 4) { attempt ->
                         val useDifferentParams = attempt % 2 == 0
-                        if (attempt == 3 && !visitorReset) {
-                            log("Resetting visitor ID on attempt $attempt")
-                            api.visitor_id = null
-                            visitorInitTried = false
-                            ensureVisitorId()
-                            visitorReset = true
-                        }
 
                         val (video, _) = videoEndpoint.getVideo(useDifferentParams, videoId)
-                        val isLive = video.videoDetails.isLiveContent == true
                         val hls = video.streamingData.hlsManifestUrl
                             ?: throw IllegalStateException("No HLS manifest URL found")
 
+                        // Positional boolean param
                         return@retry Streamable.Media.Server(
                             listOf(Streamable.Source.Http(hls.toRequest(), quality = 1_000_000)),
-                            isLive
+                            true
                         )
                     }
                 }
@@ -330,25 +322,15 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     val videoId = streamable.extras["videoId"]!!
                     log("Loading audio formats for $videoId")
 
-                    var visitorReset = false
                     retry(times = 4) { attempt ->
                         val useDifferentParams = attempt % 2 == 0
-                        if (attempt == 3 && !visitorReset) {
-                            log("Resetting visitor ID on attempt $attempt")
-                            api.visitor_id = null
-                            visitorInitTried = false
-                            ensureVisitorId()
-                            visitorReset = true
-                        }
 
                         val (video, _) = videoEndpoint.getVideo(useDifferentParams, videoId)
-                        val isLive = video.videoDetails.isLiveContent == true
                         val audioSources = video.streamingData.adaptiveFormats.mapNotNull { fmt ->
                             val mime = fmt.mimeType
                             val url = fmt.url
                             if (mime != null && mime.contains("audio") && url != null) {
-                                val q = fmt.audioSampleRate?.toIntOrNull()
-                                    ?: 48000 // fallback
+                                val q = (fmt.audioSampleRate?.toString()?.toIntOrNull()) ?: 48000
                                 Streamable.Source.Http(url.toRequest(), quality = q)
                             } else null
                         }
@@ -358,7 +340,8 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         }
 
                         val deduped = audioSources.distinctBy { it.request.url.let(::normalizeUrl) }
-                        return@retry Streamable.Media.Server(deduped, isLive = isLive)
+                        // Positional boolean param
+                        return@retry Streamable.Media.Server(deduped, false)
                     }
                 }
 
@@ -401,10 +384,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
         val useSong = resolvedTrack ?: songDeferred.await()
 
-        // Build streamables:
-        // - Always include AUDIO_MP3 when available
-        // - Include video options if allowed and not pure music
-        // - Order by preferVideos
         val streamablesRaw = buildList {
             if (showVideos && !isMusic) {
                 add(
