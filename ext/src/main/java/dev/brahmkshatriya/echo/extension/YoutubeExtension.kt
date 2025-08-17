@@ -109,6 +109,25 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     }
 
     val api = YoutubeiApi()
+    
+    // Initialize visitor ID on creation
+    init {
+        // Set default language
+        api.data_language = ENGLISH
+    }
+    
+    // Ensure visitor ID is initialized before any API calls
+    private suspend fun ensureVisitorId() {
+        try {
+            if (api.visitor_id == null) {
+                api.visitor_id = visitorEndpoint.getVisitorId()
+            }
+        } catch (e: Exception) {
+            // If visitor ID initialization fails, try to continue without it
+            // Some endpoints might work without visitor ID
+            println("Warning: Failed to initialize visitor ID: ${e.message}")
+        }
+    }
     private val thumbnailQuality
         get() = if (settings.getBoolean("high_quality") == true) HIGH else LOW
 
@@ -174,6 +193,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     ): Streamable.Media = when (streamable.type) {
         Streamable.MediaType.Server -> when (streamable.id) {
             "VIDEO_M3U8" -> {
+                // Ensure visitor ID is initialized
+                ensureVisitorId()
+                
                 // Refresh the HLS URL by getting fresh video data
                 val (video, _) = videoEndpoint.getVideo(true, streamable.extras["videoId"]!!)
                 val hlsManifestUrl = video.streamingData.hlsManifestUrl!!
@@ -181,6 +203,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             }
 
             "AUDIO_MP3" -> {
+                // Ensure visitor ID is initialized
+                ensureVisitorId()
+                
                 // Refresh audio URLs by getting fresh video data
                 val (video, _) = videoEndpoint.getVideo(true, streamable.extras["videoId"]!!)
                 val audioFiles = video.streamingData.adaptiveFormats.mapNotNull {
@@ -205,6 +230,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     }
 
     override suspend fun loadTrack(track: Track) = coroutineScope {
+        // Ensure visitor ID is initialized
+        ensureVisitorId()
+        
         val deferred = async { songEndPoint.loadSong(track.id).getOrThrow() }
         val (video, type) = videoEndpoint.getVideo(true, track.id)
         val isMusic = type == "MUSIC_VIDEO_TYPE_ATV"
