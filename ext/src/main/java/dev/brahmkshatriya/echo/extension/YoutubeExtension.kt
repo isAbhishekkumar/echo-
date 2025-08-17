@@ -108,13 +108,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         this.settings = settings
     }
 
-    val api = YoutubeiApi()
-    
-    // Initialize visitor ID on creation
-    init {
-        // Set default language
-        api.data_language = ENGLISH
-    }
+    val api = YoutubeiApi(
+        data_language = ENGLISH
+    )
     
     // Ensure visitor ID is initialized before any API calls
     private suspend fun ensureVisitorId() {
@@ -196,22 +192,54 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 // Ensure visitor ID is initialized
                 ensureVisitorId()
                 
+                println("DEBUG: Refreshing HLS URL for videoId: ${streamable.extras["videoId"]}")
+                
                 // Refresh the HLS URL by getting fresh video data
                 val (video, _) = videoEndpoint.getVideo(true, streamable.extras["videoId"]!!)
                 val hlsManifestUrl = video.streamingData.hlsManifestUrl!!
-                hlsManifestUrl.toServerMedia(type = Streamable.SourceType.HLS, isVideo = true)
+                
+                println("DEBUG: Got fresh HLS URL: $hlsManifestUrl")
+                
+                // Add cache-busting parameter
+                val cacheBuster = System.currentTimeMillis()
+                val freshUrl = if (hlsManifestUrl.contains("?")) {
+                    "$hlsManifestUrl&cachebuster=$cacheBuster"
+                } else {
+                    "$hlsManifestUrl?cachebuster=$cacheBuster"
+                }
+                
+                println("DEBUG: Final URL with cache buster: $freshUrl")
+                
+                freshUrl.toServerMedia(type = Streamable.SourceType.HLS, isVideo = true)
             }
 
             "AUDIO_MP3" -> {
                 // Ensure visitor ID is initialized
                 ensureVisitorId()
                 
+                println("DEBUG: Refreshing audio URLs for videoId: ${streamable.extras["videoId"]}")
+                
                 // Refresh audio URLs by getting fresh video data
                 val (video, _) = videoEndpoint.getVideo(true, streamable.extras["videoId"]!!)
                 val audioFiles = video.streamingData.adaptiveFormats.mapNotNull {
                     if (!it.mimeType.contains("audio")) return@mapNotNull null
-                    it.audioSampleRate.toString() to it.url!!
+                    val originalUrl = it.url!!
+                    
+                    // Add cache-busting parameter
+                    val cacheBuster = System.currentTimeMillis()
+                    val freshUrl = if (originalUrl.contains("?")) {
+                        "$originalUrl&cachebuster=$cacheBuster"
+                    } else {
+                        "$originalUrl?cachebuster=$cacheBuster"
+                    }
+                    
+                    println("DEBUG: Audio URL ${it.audioSampleRate}Hz: $freshUrl")
+                    
+                    it.audioSampleRate.toString() to freshUrl
                 }.toMap()
+                
+                println("DEBUG: Total audio formats: ${audioFiles.size}")
+                
                 Streamable.Media.Server(
                     audioFiles.map { (quality, url) ->
                         Streamable.Source.Http(
@@ -233,9 +261,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         // Ensure visitor ID is initialized
         ensureVisitorId()
         
+        println("DEBUG: Loading track: ${track.title} (${track.id})")
+        
         val deferred = async { songEndPoint.loadSong(track.id).getOrThrow() }
         val (video, type) = videoEndpoint.getVideo(true, track.id)
         val isMusic = type == "MUSIC_VIDEO_TYPE_ATV"
+
+        println("DEBUG: Video type: $type, isMusic: $isMusic")
 
         val resolvedTrack = if (resolveMusicForVideos && !isMusic) {
             searchSongForVideo(video.videoDetails.title!!, video.videoDetails.author)
@@ -246,8 +278,12 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             if (!it.mimeType.contains("audio")) return@mapNotNull null
             it.audioSampleRate.toString() to it.url!!
         }.toMap()
+        
+        println("DEBUG: Audio formats found: ${audioFiles.keys}")
+        println("DEBUG: HLS URL available: ${hlsUrl.isNotEmpty()}")
+        
         val newTrack = resolvedTrack ?: deferred.await()
-        newTrack.copy(
+        val resultTrack = newTrack.copy(
             description = video.videoDetails.shortDescription,
             artists = newTrack.artists.ifEmpty {
                 video.videoDetails.run { listOf(Artist(channelId, author)) }
@@ -268,6 +304,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             ).let { if (preferVideos) it else it.reversed() },
             plays = video.videoDetails.viewCount?.toLongOrNull()
         )
+        
+        println("DEBUG: Streamables created: ${resultTrack.streamables.size}")
+        resultTrack.streamables.forEach { streamable ->
+            println("DEBUG: Streamable: ${streamable.id} with extras: ${streamable.extras.keys}")
+        }
+        
+        resultTrack
     }
 
     private suspend fun loadRelated(track: Track) = track.run {
