@@ -239,7 +239,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 allSources.add(
                                     Streamable.Source.Http(
                                         hlsFreshUrl.toRequest(),
-                                        quality = 3000 + attempt // HLS gets highest priority (3000+)
+                                        quality = 500000 + attempt // HLS gets second priority (500000+)
                                     )
                                 )
                                 formatStats["HLS"] = (formatStats["HLS"] ?: 0) + 1
@@ -252,8 +252,10 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 
                                 // Generate unique parameters for each format
                                 val formatType = when {
-                                    mimeType.contains("video/mp4") -> "mp4"
-                                    mimeType.contains("video/webm") -> "webm"
+                                    mimeType.contains("video/mp4") && mimeType.contains("audio") -> "mp4_combined" // Combined audio+video
+                                    mimeType.contains("video/webm") && mimeType.contains("audio") -> "webm_combined" // Combined audio+video
+                                    mimeType.contains("video/mp4") -> "mp4_video" // Video-only
+                                    mimeType.contains("video/webm") -> "webm_video" // Video-only
                                     mimeType.contains("audio/mp4") -> "mp4audio"
                                     mimeType.contains("audio/webm") -> "webmaudio"
                                     mimeType.contains("audio/mp3") || mimeType.contains("audio/mpeg") -> "mp3"
@@ -261,13 +263,33 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                                 
                                 val qualityValue = when {
-                                    // Video formats - use resolution + bitrate
+                                    // Audio formats get highest priority (add 1000000 bonus)
+                                    mimeType.contains("audio/") -> {
+                                        val baseQuality = when {
+                                            format.audioSampleRate != null -> {
+                                                (format.audioSampleRate!!.toInt() + (format.bitrate / 1000)).toInt()
+                                            }
+                                            else -> format.bitrate.toInt()
+                                        }
+                                        baseQuality + 1000000 // Audio bonus
+                                    }
+                                    // Combined video+audio formats get second priority (add 750000 bonus)
+                                    mimeType.contains("video") && mimeType.contains("audio") -> {
+                                        val baseQuality = when {
+                                            format.height != null && format.width != null -> {
+                                                ((format.height!! * 1000) + (format.bitrate / 1000)).toInt()
+                                            }
+                                            else -> format.bitrate.toInt()
+                                        }
+                                        baseQuality + 750000 // Combined audio+video bonus
+                                    }
+                                    // HLS (combined video+audio) gets third priority (add 500000 bonus)
+                                    mimeType.contains("application/x-mpegurl") -> {
+                                        500000 + (format.bitrate.toInt())
+                                    }
+                                    // Video-only formats get lowest priority (no bonus)
                                     format.height != null && format.width != null -> {
                                         ((format.height!! * 1000) + (format.bitrate / 1000)).toInt()
-                                    }
-                                    // Audio formats - use sample rate + bitrate
-                                    format.audioSampleRate != null -> {
-                                        (format.audioSampleRate!!.toInt() + (format.bitrate / 1000)).toInt()
                                     }
                                     // Fallback - use bitrate
                                     else -> format.bitrate.toInt()
@@ -279,7 +301,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     "$originalUrl?cachebuster=$baseTimestamp&future=$futureTimestamp&rand=${random + formatType.hashCode()}&session=$sessionId&attempt=${attempt}_${formatType}"
                                 }
                                 
-                                println("DEBUG: Added $formatType stream (quality: $qualityValue) on attempt $attempt")
+                                println("DEBUG: Added $formatType stream (quality: $qualityValue, mimeType: ${format.mimeType}) on attempt $attempt")
                                 allSources.add(
                                     Streamable.Source.Http(
                                         freshUrl.toRequest(),
@@ -296,6 +318,10 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 
                                 println("DEBUG: Multi-format attempt $attempt succeeded with ${allSources.size} sources")
                                 println("DEBUG: Format breakdown: $formatStats")
+                                println("DEBUG: Stream priorities (top 5):")
+                                allSources.take(5).forEachIndexed { index, source ->
+                                    println("DEBUG:   ${index + 1}. Quality: ${source.quality}")
+                                }
                                 
                                 return Streamable.Media.Server(allSources, false)
                             }
