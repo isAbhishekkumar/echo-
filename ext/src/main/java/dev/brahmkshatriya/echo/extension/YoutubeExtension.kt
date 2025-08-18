@@ -195,8 +195,8 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         return when (streamable.type) {
             Streamable.MediaType.Server -> when (streamable.id) {
                 "DUAL_STREAM" -> {
-                    // Smart dual-stream system: provides both HLS and MP3 for automatic fallback
-                    println("DEBUG: Loading dual-stream for videoId: ${streamable.extras["videoId"]}")
+                    // Enhanced multi-format system: HLS + MP3 + MP4 + WebM + other formats
+                    println("DEBUG: Loading multi-format stream for videoId: ${streamable.extras["videoId"]}")
                     
                     // Ensure visitor ID is initialized
                     ensureVisitorId()
@@ -204,18 +204,19 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     val videoId = streamable.extras["videoId"]!!
                     var allSources = mutableListOf<Streamable.Source.Http>()
                     var lastError: Exception? = null
+                    var formatStats = mutableMapOf<String, Int>() // Track format counts
                     
-                    // Try to get both HLS and MP3 streams with multiple attempts
-                    for (attempt in 1..6) { // Reduced attempts since we're getting both formats
+                    // Try to get multiple format streams with enhanced attempts
+                    for (attempt in 1..6) {
                         try {
-                            println("DEBUG: Dual-stream attempt $attempt of 6")
+                            println("DEBUG: Multi-format attempt $attempt of 6")
                             
                             // Vary parameters based on attempt number
                             val useDifferentParams = attempt % 2 == 0
                             val resetVisitor = attempt > 3 // Reset visitor ID after 3 attempts
                             
                             if (resetVisitor) {
-                                println("DEBUG: Resetting visitor ID on dual-stream attempt $attempt")
+                                println("DEBUG: Resetting visitor ID on multi-format attempt $attempt")
                                 api.visitor_id = null
                                 ensureVisitorId()
                             }
@@ -226,7 +227,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             val random = java.util.Random().nextInt(1000000) + attempt
                             val sessionId = "session_${System.currentTimeMillis()}_${attempt}"
                             
-                            // Try to get HLS stream
+                            // 1. Try to get HLS stream (highest priority for video)
                             video.streamingData.hlsManifestUrl?.let { hlsUrl ->
                                 val hlsFreshUrl = if (hlsUrl.contains("?")) {
                                     "$hlsUrl&cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=${attempt}_hls"
@@ -238,46 +239,70 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 allSources.add(
                                     Streamable.Source.Http(
                                         hlsFreshUrl.toRequest(),
-                                        quality = 1000 + attempt // HLS streams get quality 1000+
+                                        quality = 3000 + attempt // HLS gets highest priority (3000+)
                                     )
                                 )
+                                formatStats["HLS"] = (formatStats["HLS"] ?: 0) + 1
                             }
                             
-                            // Try to get MP3 streams
-                            val audioFiles = video.streamingData.adaptiveFormats.mapNotNull {
-                                if (!it.mimeType.contains("audio")) return@mapNotNull null
-                                val originalUrl = it.url!!
+                            // 2. Process all adaptive formats for maximum compatibility
+                            video.streamingData.adaptiveFormats.forEach { format ->
+                                val mimeType = format.mimeType.lowercase()
+                                val originalUrl = format.url ?: return@forEach
                                 
-                                val mp3FreshUrl = if (originalUrl.contains("?")) {
-                                    "$originalUrl&cachebuster=$baseTimestamp&future=$futureTimestamp&rand=${random + 100}&session=$sessionId&attempt=${attempt}_mp3"
+                                // Generate unique parameters for each format
+                                val formatType = when {
+                                    mimeType.contains("video/mp4") -> "mp4"
+                                    mimeType.contains("video/webm") -> "webm"
+                                    mimeType.contains("audio/mp4") -> "mp4audio"
+                                    mimeType.contains("audio/webm") -> "webmaudio"
+                                    mimeType.contains("audio/mp3") || mimeType.contains("audio/mpeg") -> "mp3"
+                                    else -> "other"
+                                }
+                                
+                                val qualityValue = when {
+                                    // Video formats - use resolution + bitrate
+                                    format.height != null && format.width != null -> {
+                                        (format.height!! * 1000) + (format.bitrate / 1000)
+                                    }
+                                    // Audio formats - use sample rate + bitrate
+                                    format.audioSampleRate != null -> {
+                                        format.audioSampleRate!!.toInt() + (format.bitrate / 1000)
+                                    }
+                                    // Fallback - use bitrate
+                                    else -> format.bitrate
+                                }
+                                
+                                val freshUrl = if (originalUrl.contains("?")) {
+                                    "$originalUrl&cachebuster=$baseTimestamp&future=$futureTimestamp&rand=${random + formatType.hashCode()}&session=$sessionId&attempt=${attempt}_${formatType}"
                                 } else {
-                                    "$originalUrl?cachebuster=$baseTimestamp&future=$futureTimestamp&rand=${random + 100}&session=$sessionId&attempt=${attempt}_mp3"
+                                    "$originalUrl?cachebuster=$baseTimestamp&future=$futureTimestamp&rand=${random + formatType.hashCode()}&session=$sessionId&attempt=${attempt}_${formatType}"
                                 }
                                 
-                                it.audioSampleRate.toString() to mp3FreshUrl
-                            }.toMap()
-                            
-                            if (audioFiles.isNotEmpty()) {
-                                audioFiles.forEach { (quality, url) ->
-                                    println("DEBUG: Added MP3 stream ${quality}Hz on attempt $attempt")
-                                    allSources.add(
-                                        Streamable.Source.Http(
-                                            url.toRequest(),
-                                            quality = quality.toIntOrNull() ?: 0
-                                        )
+                                println("DEBUG: Added $formatType stream (quality: $qualityValue) on attempt $attempt")
+                                allSources.add(
+                                    Streamable.Source.Http(
+                                        freshUrl.toRequest(),
+                                        quality = qualityValue
                                     )
-                                }
+                                )
+                                formatStats[formatType.uppercase()] = (formatStats[formatType.uppercase()] ?: 0) + 1
                             }
                             
-                            // If we got at least one stream, return it
+                            // 3. If we got streams, sort by quality and return
                             if (allSources.isNotEmpty()) {
-                                println("DEBUG: Dual-stream attempt $attempt succeeded with ${allSources.size} sources")
-                                return Streamable.Media.Server(allSources, false) // false = not live for better compatibility
+                                // Sort sources by quality (descending) for optimal playback
+                                allSources.sortByDescending { it.quality }
+                                
+                                println("DEBUG: Multi-format attempt $attempt succeeded with ${allSources.size} sources")
+                                println("DEBUG: Format breakdown: $formatStats")
+                                
+                                return Streamable.Media.Server(allSources, false)
                             }
                             
                         } catch (e: Exception) {
                             lastError = e
-                            println("DEBUG: Dual-stream attempt $attempt failed: ${e.message}")
+                            println("DEBUG: Multi-format attempt $attempt failed: ${e.message}")
                             
                             // Small randomized delay between attempts
                             if (attempt < 6) {
@@ -288,7 +313,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     }
                     
                     // If all attempts failed, throw the last error
-                    throw lastError ?: Exception("All dual-stream attempts failed")
+                    throw lastError ?: Exception("All multi-format attempts failed")
                 }
                 
                 "VIDEO_M3U8" -> {
@@ -554,7 +579,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 Streamable.server(
                     "DUAL_STREAM",
                     0,
-                    "Dual Stream (HLS + MP3)",
+                    "Multi-Format Stream (HLS + MP3 + MP4 + WebM)",
                     mapOf("videoId" to track.id)
                 ).takeIf { !isMusic && (showVideos || audioFiles.isNotEmpty()) },
                 Streamable.server(
