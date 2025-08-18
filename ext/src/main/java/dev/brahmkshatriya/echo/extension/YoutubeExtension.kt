@@ -266,8 +266,8 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         }
     }
     
-    private suspend fun loadAudioOnlyStream(videoId: String, format: String): Streamable.Media {
-        println("DEBUG: Loading audio-only stream: $format for videoId: $videoId")
+    private suspend fun loadAudioOnlyStream(videoId: String, formatType: String): Streamable.Media {
+        println("DEBUG: Loading audio-only stream: $formatType for videoId: $videoId")
         
         // Ensure visitor ID is initialized
         ensureVisitorId()
@@ -275,13 +275,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         var lastError: Exception? = null
         for (attempt in 1..3) { // Try 3 times for this specific format
             try {
-                println("DEBUG: Audio-only $format attempt $attempt of 3")
+                println("DEBUG: Audio-only $formatType attempt $attempt of 3")
                 
                 val useDifferentParams = attempt % 2 == 0
                 val resetVisitor = attempt > 1
                 
                 if (resetVisitor) {
-                    println("DEBUG: Resetting visitor ID for audio-only $format attempt $attempt")
+                    println("DEBUG: Resetting visitor ID for audio-only $formatType attempt $attempt")
                     api.visitor_id = null
                     ensureVisitorId()
                 }
@@ -299,7 +299,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     val originalUrl = format.url ?: return@forEach
                     
                     // Filter for audio-only formats of the requested type
-                    val isTargetFormat = when (format) {
+                    val isTargetFormat = when (formatType) {
                         "mp3" -> mimeType.contains("audio/mp3") || mimeType.contains("audio/mpeg")
                         "mp4" -> mimeType.contains("audio/mp4")
                         "webm" -> mimeType.contains("audio/webm")
@@ -324,15 +324,15 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 }
                 
                 if (audioSources.isNotEmpty()) {
-                    println("DEBUG: Found ${audioSources.size} audio-only $format sources")
+                    println("DEBUG: Found ${audioSources.size} audio-only $formatType sources")
                     return Streamable.Media.Server(audioSources, false)
                 } else {
-                    throw Exception("No audio-only $format streams found")
+                    throw Exception("No audio-only $formatType streams found")
                 }
                 
             } catch (e: Exception) {
                 lastError = e
-                println("DEBUG: Audio-only $format attempt $attempt failed: ${e.message}")
+                println("DEBUG: Audio-only $formatType attempt $attempt failed: ${e.message}")
                 
                 if (attempt < 3) {
                     val delayTime = 200L + java.util.Random().nextInt(100)
@@ -341,11 +341,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             }
         }
         
-        throw lastError ?: Exception("All audio-only $format attempts failed")
+        throw lastError ?: Exception("All audio-only $formatType attempts failed")
     }
     
-    private suspend fun loadCombinedStream(videoId: String, format: String): Streamable.Media {
-        println("DEBUG: Loading combined stream: $format for videoId: $videoId")
+    private suspend fun loadCombinedStream(videoId: String, formatType: String): Streamable.Media {
+        println("DEBUG: Loading combined stream: $formatType for videoId: $videoId")
         
         // Ensure visitor ID is initialized
         ensureVisitorId()
@@ -353,13 +353,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         var lastError: Exception? = null
         for (attempt in 1..3) { // Try 3 times for this specific format
             try {
-                println("DEBUG: Combined $format attempt $attempt of 3")
+                println("DEBUG: Combined $formatType attempt $attempt of 3")
                 
                 val useDifferentParams = attempt % 2 == 0
                 val resetVisitor = attempt > 1
                 
                 if (resetVisitor) {
-                    println("DEBUG: Resetting visitor ID for combined $format attempt $attempt")
+                    println("DEBUG: Resetting visitor ID for combined $formatType attempt $attempt")
                     api.visitor_id = null
                     ensureVisitorId()
                 }
@@ -377,7 +377,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     val originalUrl = format.url ?: return@forEach
                     
                     // Filter for combined audio+video formats of the requested type
-                    val isTargetFormat = when (format) {
+                    val isTargetFormat = when (formatType) {
                         "mp4" -> mimeType.contains("video/mp4") && mimeType.contains("audio")
                         "webm" -> mimeType.contains("video/webm") && mimeType.contains("audio")
                         else -> false
@@ -390,7 +390,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             "$originalUrl?cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=${attempt}_combined"
                         }
                         
-                        val quality = (format.height ?: 0) * 1000 + (format.bitrate / 1000).toInt()
+                        val quality = ((format.height ?: 0) * 1000 + (format.bitrate ?: 0) / 1000).toInt()
                         combinedSources.add(
                             Streamable.Source.Http(
                                 freshUrl.toRequest(),
@@ -401,15 +401,15 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 }
                 
                 if (combinedSources.isNotEmpty()) {
-                    println("DEBUG: Found ${combinedSources.size} combined $format sources")
+                    println("DEBUG: Found ${combinedSources.size} combined $formatType sources")
                     return Streamable.Media.Server(combinedSources, false)
                 } else {
-                    throw Exception("No combined $format streams found")
+                    throw Exception("No combined $formatType streams found")
                 }
                 
             } catch (e: Exception) {
                 lastError = e
-                println("DEBUG: Combined $format attempt $attempt failed: ${e.message}")
+                println("DEBUG: Combined $formatType attempt $attempt failed: ${e.message}")
                 
                 if (attempt < 3) {
                     val delayTime = 200L + java.util.Random().nextInt(100)
@@ -418,7 +418,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             }
         }
         
-        throw lastError ?: Exception("All combined $format attempts failed")
+        throw lastError ?: Exception("All combined $formatType attempts failed")
     }
     
     private suspend fun loadHlsStream(videoId: String): Streamable.Media {
