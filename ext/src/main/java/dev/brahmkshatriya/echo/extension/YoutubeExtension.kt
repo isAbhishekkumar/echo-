@@ -245,7 +245,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             // Priority 2: Get best audio streams (fallback)
                             val audioFormats = video.streamingData.adaptiveFormats
                                 .filter { it.mimeType.contains("audio") && it.url != null }
-                                .sortedByDescending { it.audioSampleRate ?: 0 }
+                                .sortedByDescending { it.audioSampleRate?.toInt() ?: 0 }
                             
                             audioFormats.forEach { format ->
                                 val audioUrl = format.url!!
@@ -260,7 +260,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 sources.add(
                                     Streamable.Source.Http(
                                         finalAudioUrl.toRequest(),
-                                        quality = format.audioSampleRate ?: 0
+                                        quality = format.audioSampleRate?.toInt() ?: 0
                                     )
                                 )
                             }
@@ -281,7 +281,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             // Exponential backoff with jitter
                             if (attempt < 5) {
                                 val baseDelay = 300L * attempt // 300ms, 600ms, 900ms, 1200ms
-                                val jitter = (0..100).random()
+                                val jitter = (0..100).random().toLong()
                                 kotlinx.coroutines.delay(baseDelay + jitter)
                             }
                         }
@@ -306,7 +306,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             
                             val audioSources = video.streamingData.adaptiveFormats
                                 .filter { it.mimeType.contains("audio") && it.url != null }
-                                .sortedByDescending { it.audioSampleRate ?: 0 }
+                                .sortedByDescending { it.audioSampleRate?.toInt() ?: 0 }
                                 .map { format ->
                                     val audioUrl = format.url!!
                                     val timestamp = System.currentTimeMillis()
@@ -318,7 +318,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     
                                     Streamable.Source.Http(
                                         finalUrl.toRequest(),
-                                        quality = format.audioSampleRate ?: 0
+                                        quality = format.audioSampleRate?.toInt() ?: 0
                                     )
                                 }
                             
