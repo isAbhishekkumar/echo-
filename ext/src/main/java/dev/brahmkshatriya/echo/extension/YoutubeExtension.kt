@@ -263,14 +263,14 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 val qualityValue = when {
                                     // Video formats - use resolution + bitrate
                                     format.height != null && format.width != null -> {
-                                        (format.height!! * 1000) + (format.bitrate / 1000)
+                                        ((format.height!! * 1000) + (format.bitrate / 1000)).toInt()
                                     }
                                     // Audio formats - use sample rate + bitrate
                                     format.audioSampleRate != null -> {
-                                        format.audioSampleRate!!.toInt() + (format.bitrate / 1000)
+                                        (format.audioSampleRate!!.toInt() + (format.bitrate / 1000)).toInt()
                                     }
                                     // Fallback - use bitrate
-                                    else -> format.bitrate
+                                    else -> format.bitrate.toInt()
                                 }
                                 
                                 val freshUrl = if (originalUrl.contains("?")) {
