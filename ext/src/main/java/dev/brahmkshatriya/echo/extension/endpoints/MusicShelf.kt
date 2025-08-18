@@ -185,7 +185,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         return when (streamable.type) {
             Streamable.MediaType.Server -> when (streamable.id) {
                 "DUAL_STREAM" -> {
-                    // Improved Dual-stream system
+                    // Improved Dual-stream system based on original code style
                     println("DEBUG: Loading improved dual-stream for videoId: ${streamable.extras["videoId"]}")
                     ensureVisitorId()
 
@@ -193,14 +193,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         ?: throw IllegalArgumentException("Missing videoId for DUAL_STREAM")
 
                     var lastException: Exception? = null
-                    val maxMainAttempts = 3 // Reduced main attempts, more granular retries
-                    // Note: maxSubAttempts variable was declared but not used in the previous version, removing it.
+                    val maxMainAttempts = 3
 
                     for (mainAttempt in 1..maxMainAttempts) {
                         try {
                             println("DEBUG: Dual-stream main attempt $mainAttempt/$maxMainAttempts")
 
-                            // Potentially reset visitor ID periodically or on specific failures
+                            // Potentially reset visitor ID periodically
                             if (mainAttempt > 1) {
                                 println("DEBUG: Resetting visitor ID before main attempt $mainAttempt")
                                 api.visitor_id = null
@@ -208,15 +207,15 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             }
 
                             // --- Attempt to fetch video data ---
-                            val videoData: Pair<dev.toastbits.ytmkt.model.internal.Video, String>? = try {
+                            // Use the same pattern as original code for fetching data
+                            val videoData: Pair<dev.brahmkshatriya.echo.extension.endpoints.YoutubeFormatResponse, String>? = try {
                                 withTimeout(10_000) { // 10 second timeout for initial fetch
-                                    videoEndpoint.getVideo(useHLS = true, videoId = videoId) // Get data once
+                                    videoEndpoint.getVideo(true, videoId) // Assuming this returns Pair<YoutubeFormatResponse, String>
                                 }
                             } catch (e: Exception) {
                                 println("DEBUG: Failed to fetch video data on main attempt $mainAttempt: ${e.message}")
                                 lastException = e
-                                // Don't return yet, try the next main attempt
-                                continue
+                                continue // Try next main attempt
                             }
                             val (video, type) = videoData ?: continue // If null, retry main loop
 
@@ -226,14 +225,14 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
                             // --- Fetch HLS Stream ---
                             try {
-                                val hlsUrl = video.streamingData.hlsManifestUrl
+                                val hlsUrl = video.streamingData?.hlsManifestUrl // Safe call
                                 if (!hlsUrl.isNullOrEmpty()) {
                                     val freshHlsUrl = addCacheBustingParams(hlsUrl, "hls_main_$mainAttempt")
                                     println("DEBUG: Adding primary HLS stream: $freshHlsUrl")
                                     allSources.add(
                                         Streamable.Source.Http(
                                             freshHlsUrl.toRequest(),
-                                            quality = 1080 // Assign a standard quality value for HLS
+                                            quality = 1080 // Standard quality for HLS
                                         )
                                     )
                                     hlsSuccess = true
@@ -242,21 +241,22 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                             } catch (e: Exception) {
                                 println("DEBUG: Error processing HLS stream on main attempt $mainAttempt: ${e.message}")
-                                // Continue trying MP3 even if HLS fails initially
                             }
 
                             // --- Fetch MP3 Streams ---
                             try {
-                                val audioFormats = video.streamingData.adaptiveFormats.filter {
-                                    it.mimeType.contains("audio")
-                                }
+                                // Assuming video.streamingData.adaptiveFormats exists and has mimeType, url, audioSampleRate
+                                val audioFormats = video.streamingData?.adaptiveFormats?.filter {
+                                    it.mimeType?.contains("audio") == true // Safe call and null check
+                                } ?: emptyList()
+
                                 if (audioFormats.isNotEmpty()) {
                                     for ((index, format) in audioFormats.withIndex()) {
-                                        // --- FIX: Correctly access 'url' and 'audioSampleRate' from 'format' ---
+                                        // Safe call on url
                                         format.url?.let { originalUrl ->
                                             val freshMp3Url = addCacheBustingParams(originalUrl, "mp3_${mainAttempt}_${index}")
-                                            // --- FIX: Correctly access 'audioSampleRate' from 'format' ---
-                                            val quality = format.audioSampleRate.toIntOrNull() ?: 128000 // Default if parsing fails
+                                            // Safe call and null check on audioSampleRate
+                                            val quality = format.audioSampleRate?.toIntOrNull() ?: 128000
                                             println("DEBUG: Adding MP3 stream (quality: $quality): $freshMp3Url")
                                             allSources.add(
                                                 Streamable.Source.Http(
@@ -266,22 +266,15 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                             )
                                         }
                                     }
-                                    // --- FIX/CLARIFICATION: Check if any non-HLS sources (MP3) were added ---
-                                    // The previous check 'it.quality != 1080' was slightly off logic.
-                                    // Let's just check if we added any MP3 sources based on the loop.
-                                    // A simple way is to check if the size increased beyond potential HLS source.
-                                    // Or, set a flag inside the loop (mp3Success).
-                                    // For now, let's assume if the audioFormats list wasn't empty and the loop ran,
-                                    // we intended to add MP3 sources (even if some failed). The flag is simpler.
-                                    if (audioFormats.any { it.url != null }) { // Check if any format had a URL to add
-                                         mp3Success = true
+                                    // Check if any MP3 source was successfully added
+                                    if (allSources.any { it.quality != 1080 }) {
+                                        mp3Success = true
                                     }
                                 } else {
                                     println("DEBUG: No MP3 formats found in video data for attempt $mainAttempt")
                                 }
                             } catch (e: Exception) {
                                 println("DEBUG: Error processing MP3 streams on main attempt $mainAttempt: ${e.message}")
-                                // Don't let MP3 processing failure stop the whole attempt if HLS succeeded
                             }
 
                             // --- Evaluate Success ---
@@ -305,7 +298,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                                     e is SSLException ||
                                                     (e is ClientRequestException && e.response.status.value in 400..599)
                                if (!isNetworkError) {
-                                   kotlinx.coroutines.delay(500) // Short delay for non-network issues
+                                   kotlinx.coroutines.delay(500)
                                }
                             }
                         }
