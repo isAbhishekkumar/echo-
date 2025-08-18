@@ -80,86 +80,44 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     TrackLikeClient, PlaylistEditClient {
 
     override val settingItems: List<Setting> = listOf(
-        SettingSwitch(
-            "Prefer Videos",
-            "prefer_videos",
-            "Prefer videos over audio when available",
-            false
-        ),
-        SettingSwitch(
-            "Show Videos",
-            "show_videos",
-            "Allows videos to be available when playing stuff. Instead of disabling videos, change the streaming quality as Medium in the app settings to select audio only by default.",
-            true
-        ),
-        SettingSwitch(
-            "Resolve to Music for Videos",
-            "resolve_music_for_videos",
-            "Resolve actual music metadata for music videos, does slow down loading music videos.",
-            true
-        ),
-        SettingSwitch(
-            "High Thumbnail Quality",
-            "high_quality",
-            "Use high quality thumbnails, will cause more data usage.",
-            false
-        ),
-        SettingSwitch(
-            "Verbose debug logs",
-            "verbose_logs",
-            "Enable detailed logs for troubleshooting",
-            false
-        ),
+        SettingSwitch("Prefer Videos","prefer_videos","Prefer videos over audio when available", false),
+        SettingSwitch("Show Videos","show_videos","Allows videos to be available when playing stuff. Instead of disabling videos, change the streaming quality as Medium in the app settings to select audio only by default.", true),
+        SettingSwitch("Resolve to Music for Videos","resolve_music_for_videos","Resolve actual music metadata for music videos, does slow down loading music videos.", true),
+        SettingSwitch("High Thumbnail Quality","high_quality","Use high quality thumbnails, will cause more data usage.", false),
+        SettingSwitch("Verbose debug logs","verbose_logs","Enable detailed logs for troubleshooting", false),
     )
 
     private lateinit var settings: Settings
-    override fun setSettings(settings: Settings) {
-        this.settings = settings
-    }
+    override fun setSettings(settings: Settings) { this.settings = settings }
 
     private val verboseLogs get() = settings.getBoolean("verbose_logs") == true
-    private fun log(msg: String) {
-        if (verboseLogs) println("YTMusicExt: $msg")
-    }
+    private fun log(msg: String) { if (verboseLogs) println("YTMusicExt: $msg") }
 
-    val api = YoutubeiApi(
-        data_language = ENGLISH
-    )
+    val api = YoutubeiApi(data_language = ENGLISH)
 
     // Thread-safe visitor ID initialization
     private val visitorMutex = Mutex()
     @Volatile private var visitorInitTried = false
-
     private suspend fun ensureVisitorId() {
         if (api.visitor_id != null) return
         visitorMutex.withLock {
-            if (api.visitor_id != null) return
-            if (visitorInitTried) return
+            if (api.visitor_id != null || visitorInitTried) return
             visitorInitTried = true
             runCatching {
                 log("Initializing visitor ID")
                 api.visitor_id = visitorEndpoint.getVisitorId()
-                log("Visitor ID initialized: ${api.visitor_id}")
+                log("Visitor ID: ${api.visitor_id}")
             }.onFailure {
-                log("Failed to initialize visitor ID: ${it.message}")
-                // allow retry later
+                log("Visitor ID init failed: ${it.message}")
                 visitorInitTried = false
             }
         }
     }
 
-    private val thumbnailQuality
-        get() = if (settings.getBoolean("high_quality") == true) HIGH else LOW
-
-    private val resolveMusicForVideos
-        get() = settings.getBoolean("resolve_music_for_videos") ?: true
-
-    private val showVideos
-        get() = settings.getBoolean("show_videos") ?: true
-
-    private val preferVideos
-        get() = settings.getBoolean("prefer_videos") ?: false
-
+    private val thumbnailQuality get() = if (settings.getBoolean("high_quality") == true) HIGH else LOW
+    private val resolveMusicForVideos get() = settings.getBoolean("resolve_music_for_videos") ?: true
+    private val showVideos get() = settings.getBoolean("show_videos") ?: true
+    private val preferVideos get() = settings.getBoolean("prefer_videos") ?: false
     private val language = ENGLISH
 
     private val visitorEndpoint = EchoVisitorEndpoint(api)
@@ -185,45 +143,26 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     override suspend fun getHomeTabs() = listOf<Tab>()
 
     override fun getHomeFeed(tab: Tab?) = PagedData.Continuous {
-        val continuation = it
-        val result = songFeedEndPoint.getSongFeed(
-            params = null, continuation = continuation
-        ).getOrThrow()
-        val data = result.layouts.map { itemLayout ->
-            itemLayout.toShelf(api, SINGLES, thumbnailQuality)
-        }
+        val result = songFeedEndPoint.getSongFeed(params = null, continuation = it).getOrThrow()
+        val data = result.layouts.map { itemLayout -> itemLayout.toShelf(api, SINGLES, thumbnailQuality) }
         Page(data, result.ctoken)
     }.toFeed()
 
     private suspend fun searchSongForVideo(title: String, artists: String): Track? {
-        val result = searchEndpoint.search(
-            "$title $artists",
-            "EgWKAQIIAWoSEAMQBBAJEA4QChAFEBEQEBAV",
-            false
-        ).getOrThrow().categories.firstOrNull()?.first?.items?.firstOrNull() ?: return null
-        val mediaItem =
-            result.toEchoMediaItem(false, thumbnailQuality) as EchoMediaItem.TrackItem
+        val result = searchEndpoint.search("$title $artists","EgWKAQIIAWoSEAMQBBAJEA4QChAFEBEQEBAV",false)
+            .getOrThrow().categories.firstOrNull()?.first?.items?.firstOrNull() ?: return null
+        val mediaItem = result.toEchoMediaItem(false, thumbnailQuality) as EchoMediaItem.TrackItem
         if (mediaItem.title != title) return null
-        val newTrack = songEndPoint.loadSong(mediaItem.id).getOrThrow()
-        return newTrack
+        return songEndPoint.loadSong(mediaItem.id).getOrThrow()
     }
 
-    // Simple retry with backoff + jitter
-    private suspend fun <T> retry(
-        times: Int,
-        initialDelayMs: Long = 200,
-        factor: Double = 1.8,
-        jitterMs: Long = 120,
-        block: suspend (attempt: Int) -> T
-    ): T {
+    // Retry with backoff + jitter
+    private suspend fun <T> retry(times: Int, initialDelayMs: Long = 200, factor: Double = 1.8, jitterMs: Long = 120, block: suspend (attempt: Int) -> T): T {
         var curDelay = initialDelayMs
         repeat(times - 1) { attempt ->
-            try {
-                return block(attempt + 1)
-            } catch (e: Exception) {
+            try { return block(attempt + 1) } catch (e: Exception) {
                 log("Attempt ${attempt + 1} failed: ${e.message}")
-                val sleep = curDelay + kotlin.random.Random.nextLong(0, jitterMs)
-                delay(sleep)
+                delay(curDelay + kotlin.random.Random.nextLong(0, jitterMs))
                 curDelay = (curDelay * factor).toLong().coerceAtMost(2_000)
             }
         }
@@ -235,119 +174,96 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         return if (idx != -1) url.substring(0, idx) else url
     }
 
-    override suspend fun loadStreamableMedia(
-        streamable: Streamable, isDownload: Boolean
-    ): Streamable.Media {
+    override suspend fun loadStreamableMedia(streamable: Streamable, isDownload: Boolean): Streamable.Media {
         return when (streamable.type) {
             Streamable.MediaType.Server -> when (streamable.id) {
                 "DUAL_STREAM" -> {
                     val videoId = streamable.extras["videoId"]!!
-                    log("Loading dual-stream for $videoId")
+                    log("load DUAL_STREAM $videoId")
                     ensureVisitorId()
 
-                    var visitorReset = false
-                    val result = retry(times = 4) { attempt ->
+                    retry(times = 4) { attempt ->
                         val useDifferentParams = attempt % 2 == 0
-                        if (attempt == 3 && !visitorReset) {
-                            log("Resetting visitor ID on attempt $attempt")
-                            api.visitor_id = null
-                            visitorInitTried = false
-                            ensureVisitorId()
-                            visitorReset = true
-                        }
-
                         val (video, _) = videoEndpoint.getVideo(useDifferentParams, videoId)
 
                         val sources = mutableListOf<Streamable.Source.Http>()
 
-                        // Prefer HLS by giving it a very high quality score
-                        video.streamingData.hlsManifestUrl?.let { hls ->
-                            log("DUAL_STREAM: adding HLS")
-                            sources.add(
-                                Streamable.Source.Http(
-                                    hls.toRequest(),
-                                    quality = 1_000_000 - attempt // HLS wins
-                                )
-                            )
+                        // HLS first
+                        val hls = video.streamingData.hlsManifestUrl
+                        val hasHls = hls != null
+                        if (hasHls) {
+                            log("DUAL_STREAM: add HLS")
+                            sources.add(Streamable.Source.Http(hls!!.toRequest(), quality = 1_000_000 - attempt))
                         }
 
-                        // Add progressive audio as fallback
+                        // Progressive audio fallbacks
                         video.streamingData.adaptiveFormats.forEach { fmt ->
-                            val mime = fmt.mimeType
-                            val url = fmt.url
+                            val mime = fmt.mimeType; val url = fmt.url
                             if (mime != null && mime.contains("audio") && url != null) {
                                 val q = (fmt.audioSampleRate?.toString()?.toIntOrNull()) ?: 48000
-                                sources.add(
-                                    Streamable.Source.Http(
-                                        url.toRequest(),
-                                        quality = q
-                                    )
-                                )
+                                sources.add(Streamable.Source.Http(url.toRequest(), quality = q))
                             }
                         }
 
-                        val deduped = sources.distinctBy { it.request.url.let(::normalizeUrl) }
-                        if (deduped.isEmpty()) {
-                            throw IllegalStateException("No playable sources found")
-                        }
+                        val deduped = sources.distinctBy { normalizeUrl(it.request.url) }
+                        if (deduped.isEmpty()) throw IllegalStateException("No playable sources found")
 
-                        // Second parameter by position (boolean) to match API signature
-                        Streamable.Media.Server(deduped, false)
+                        // merged = true when HLS present so Exo uses HLS pipeline
+                        Streamable.Media.Server(deduped, hasHls)
                     }
-                    result
                 }
 
                 "VIDEO_M3U8" -> {
                     ensureVisitorId()
                     val videoId = streamable.extras["videoId"]!!
-                    log("Loading HLS for $videoId")
+                    log("load VIDEO_M3U8 $videoId")
 
                     retry(times = 4) { attempt ->
                         val useDifferentParams = attempt % 2 == 0
-
                         val (video, _) = videoEndpoint.getVideo(useDifferentParams, videoId)
-                        val hls = video.streamingData.hlsManifestUrl
-                            ?: throw IllegalStateException("No HLS manifest URL found")
-
-                        // Positional boolean param
-                        return@retry Streamable.Media.Server(
-                            listOf(Streamable.Source.Http(hls.toRequest(), quality = 1_000_000)),
-                            true
-                        )
+                        val hls = video.streamingData.hlsManifestUrl ?: throw IllegalStateException("No HLS manifest URL found")
+                        Streamable.Media.Server(listOf(Streamable.Source.Http(hls.toRequest(), quality = 1_000_000)), true)
                     }
                 }
 
                 "AUDIO_MP3" -> {
                     ensureVisitorId()
                     val videoId = streamable.extras["videoId"]!!
-                    log("Loading audio formats for $videoId")
+                    log("load AUDIO_MP3 $videoId")
 
                     retry(times = 4) { attempt ->
                         val useDifferentParams = attempt % 2 == 0
-
                         val (video, _) = videoEndpoint.getVideo(useDifferentParams, videoId)
-                        val audioSources = video.streamingData.adaptiveFormats.mapNotNull { fmt ->
-                            val mime = fmt.mimeType
-                            val url = fmt.url
+
+                        val sources = mutableListOf<Streamable.Source.Http>()
+
+                        // Prefer HLS if available to avoid 403s on direct audio
+                        val hls = video.streamingData.hlsManifestUrl
+                        val hasHls = hls != null
+                        if (hasHls) {
+                            log("AUDIO_MP3: add HLS as fallback-first")
+                            sources.add(Streamable.Source.Http(hls!!.toRequest(), quality = 1_000_000 - attempt))
+                        }
+
+                        // Progressive audio options
+                        video.streamingData.adaptiveFormats.forEach { fmt ->
+                            val mime = fmt.mimeType; val url = fmt.url
                             if (mime != null && mime.contains("audio") && url != null) {
                                 val q = (fmt.audioSampleRate?.toString()?.toIntOrNull()) ?: 48000
-                                Streamable.Source.Http(url.toRequest(), quality = q)
-                            } else null
+                                sources.add(Streamable.Source.Http(url.toRequest(), quality = q))
+                            }
                         }
 
-                        if (audioSources.isEmpty()) {
-                            throw IllegalStateException("No audio formats found")
-                        }
+                        val deduped = sources.distinctBy { normalizeUrl(it.request.url) }
+                        if (deduped.isEmpty()) throw IllegalStateException("No audio formats found")
 
-                        val deduped = audioSources.distinctBy { it.request.url.let(::normalizeUrl) }
-                        // Positional boolean param
-                        return@retry Streamable.Media.Server(deduped, false)
+                        // merged = hasHls
+                        Streamable.Media.Server(deduped, hasHls)
                     }
                 }
 
                 else -> throw IllegalArgumentException("Unknown server streamable ID: ${streamable.id}")
             }
-
             Streamable.MediaType.Background -> throw IllegalArgumentException("Background media type not supported")
             Streamable.MediaType.Subtitle -> throw IllegalArgumentException("Subtitle media type not supported")
         }
@@ -369,51 +285,30 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
         val audioFiles = video.streamingData.adaptiveFormats
             .mapNotNull { fmt ->
-                val mime = fmt.mimeType
-                val url = fmt.url
-                if (mime != null && mime.contains("audio") && url != null) {
-                    fmt.audioSampleRate?.toString() to url
-                } else null
+                val mime = fmt.mimeType; val url = fmt.url
+                if (mime != null && mime.contains("audio") && url != null) fmt.audioSampleRate?.toString() to url else null
             }.toMap()
 
         val hlsUrl = video.streamingData.hlsManifestUrl
         val hasAudio = audioFiles.isNotEmpty()
 
-        log("Audio formats found: ${audioFiles.keys}")
-        log("HLS URL available: ${hlsUrl != null}")
+        log("Audio formats: ${audioFiles.keys}")
+        log("HLS available: ${hlsUrl != null}")
 
         val useSong = resolvedTrack ?: songDeferred.await()
 
+        // Build streamables:
+        // - If showVideos: always include DUAL_STREAM (even for music) so HLS can be selected.
+        // - Always include AUDIO_MP3 when progressive audio exists.
         val streamablesRaw = buildList {
-            if (showVideos && !isMusic) {
-                add(
-                    Streamable.server(
-                        "DUAL_STREAM",
-                        0,
-                        "Dual Stream (HLS + Audio)",
-                        mapOf("videoId" to track.id)
-                    )
-                )
+            if (showVideos) {
+                add(Streamable.server("DUAL_STREAM", 0, "Dual Stream (HLS + Audio)", mapOf("videoId" to track.id)))
                 if (hlsUrl != null && !hasAudio) {
-                    add(
-                        Streamable.server(
-                            "VIDEO_M3U8",
-                            0,
-                            "Video M3U8",
-                            mapOf("videoId" to track.id)
-                        )
-                    )
+                    add(Streamable.server("VIDEO_M3U8", 0, "Video M3U8", mapOf("videoId" to track.id)))
                 }
             }
             if (hasAudio) {
-                add(
-                    Streamable.server(
-                        "AUDIO_MP3",
-                        0,
-                        "Audio (direct)",
-                        mapOf("videoId" to track.id)
-                    )
-                )
+                add(Streamable.server("AUDIO_MP3", 0, "Audio (direct)", mapOf("videoId" to track.id)))
             }
         }
 
@@ -421,16 +316,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             if (preferVideos) streamablesRaw
             else streamablesRaw.sortedBy { item -> if (item.id == "AUDIO_MP3") 0 else 1 }
 
-        log("Streamables created: ${streamables.size}")
-        streamables.forEach { s ->
-            log("Streamable: ${s.id} extras: ${s.extras.keys}")
-        }
+        log("Streamables: ${streamables.map { it.id }}")
 
         useSong.copy(
             description = video.videoDetails.shortDescription,
-            artists = useSong.artists.ifEmpty {
-                video.videoDetails.run { listOf(Artist(channelId, author)) }
-            },
+            artists = useSong.artists.ifEmpty { video.videoDetails.run { listOf(Artist(channelId, author)) } },
             streamables = streamables,
             plays = video.videoDetails.viewCount?.toLongOrNull()
         )
@@ -453,11 +343,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         try {
             api.SearchSuggestions.getSearchSuggestions(this).getOrThrow()
                 .map { QuickSearchItem.Query(it.text, it.is_from_history) }
-        } catch (e: NullPointerException) {
-            null
-        } catch (e: ConnectTimeoutException) {
-            null
-        }
+        } catch (_: NullPointerException) { null } catch (_: ConnectTimeoutException) { null }
     } ?: listOf()
 
     // Small LRU cache for All-tab search shelves
@@ -471,54 +357,36 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
         val search = api.Search.search(query, tab?.id).getOrThrow()
         val shelves = search.categories.map { (itemLayout, _) ->
-            itemLayout.items.mapNotNull { item ->
-                item.toEchoMediaItem(false, thumbnailQuality)?.toShelf()
-            }
+            itemLayout.items.mapNotNull { item -> item.toEchoMediaItem(false, thumbnailQuality)?.toShelf() }
         }.flatten()
 
         if (tab == null || tab.id == "All") searchCache[query] = shelves
         shelves
     }.toFeed() else if (tab != null) PagedData.Continuous {
-        val params = tab.id
-        val continuation = it
-        val result = songFeedEndPoint.getSongFeed(
-            params = params, continuation = continuation
-        ).getOrThrow()
-        val data = result.layouts.map { itemLayout ->
-            itemLayout.toShelf(api, SINGLES, thumbnailQuality)
-        }
+        val result = songFeedEndPoint.getSongFeed(params = tab.id, continuation = it).getOrThrow()
+        val data = result.layouts.map { itemLayout -> itemLayout.toShelf(api, SINGLES, thumbnailQuality) }
         Page(data, result.ctoken)
     }.toFeed() else PagedData.Single<Shelf> { listOf() }.toFeed()
 
     override suspend fun searchTabs(query: String): List<Tab> {
         if (query.isNotBlank()) {
             val search = api.Search.search(query, null).getOrThrow()
-            val shelves = search.categories.map { (itemLayout, _) ->
-                itemLayout.toShelf(api, SINGLES, thumbnailQuality)
-            }
+            val shelves = search.categories.map { (itemLayout, _) -> itemLayout.toShelf(api, SINGLES, thumbnailQuality) }
             searchCache[query] = shelves
             val tabs = search.categories.mapNotNull { (item, filter) ->
-                filter?.let {
-                    Tab(
-                        it.params, item.title?.getString(language) ?: "???"
-                    )
-                }
+                filter?.let { Tab(it.params, item.title?.getString(language) ?: "???") }
             }
             return listOf(Tab("All", "All")) + tabs
         } else {
             val result = songFeedEndPoint.getSongFeed().getOrThrow()
-            return result.filter_chips?.map {
-                Tab(it.params, it.text.getString(language))
-            } ?: emptyList()
+            return result.filter_chips?.map { Tab(it.params, it.text.getString(language)) } ?: emptyList()
         }
     }
 
-    override fun loadTracks(radio: Radio) =
-        PagedData.Single { json.decodeFromString<List<Track>>(radio.extras["tracks"]!!) }
+    override fun loadTracks(radio: Radio) = PagedData.Single { json.decodeFromString<List<Track>>(radio.extras["tracks"]!!) }
 
     override suspend fun radio(album: Album): Radio {
-        val track = api.LoadPlaylist.loadPlaylist(album.id).getOrThrow().items
-            ?.lastOrNull()?.toTrack(HIGH)
+        val track = api.LoadPlaylist.loadPlaylist(album.id).getOrThrow().items?.lastOrNull()?.toTrack(HIGH)
             ?: throw Exception("No tracks found")
         return radio(track, null)
     }
@@ -527,13 +395,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         val id = "radio_${artist.id}"
         val result = api.ArtistRadio.getArtistRadio(artist.id, null).getOrThrow()
         val tracks = result.items.map { song -> song.toTrack(thumbnailQuality) }
-        return Radio(
-            id = id,
-            title = "${artist.name} Radio",
-            extras = mutableMapOf<String, String>().apply {
-                put("tracks", json.encodeToString(tracks))
-            }
-        )
+        return Radio(id = id, title = "${artist.name} Radio", extras = mutableMapOf<String, String>().apply {
+            put("tracks", json.encodeToString(tracks))
+        })
     }
 
     override suspend fun radio(track: Track, context: EchoMediaItem?): Radio {
@@ -541,34 +405,25 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         val cont = (context as? EchoMediaItem.Lists.RadioItem)?.radio?.extras?.get("cont")
         val result = api.SongRadio.getSongRadio(track.id, cont).getOrThrow()
         val tracks = result.items.map { song -> song.toTrack(thumbnailQuality) }
-        return Radio(
-            id = id,
-            title = "${track.title} Radio",
-            extras = mutableMapOf<String, String>().apply {
-                put("tracks", json.encodeToString(tracks))
-                result.continuation?.let { put("cont", it) }
-            }
-        )
+        return Radio(id = id, title = "${track.title} Radio", extras = mutableMapOf<String, String>().apply {
+            put("tracks", json.encodeToString(tracks)); result.continuation?.let { put("cont", it) }
+        })
     }
 
     override suspend fun radio(user: User) = radio(user.toArtist())
 
     override suspend fun radio(playlist: Playlist): Radio {
-        val track = loadTracks(playlist).loadAll().lastOrNull()
-            ?: throw Exception("No tracks found")
+        val track = loadTracks(playlist).loadAll().lastOrNull() ?: throw Exception("No tracks found")
         return radio(track, null)
     }
 
     override fun getShelves(album: Album): PagedData<Shelf> = PagedData.Single {
-        loadTracks(album).loadAll().lastOrNull()?.let { loadRelated(loadTrack(it)) }
-            ?: emptyList()
+        loadTracks(album).loadAll().lastOrNull()?.let { loadRelated(loadTrack(it)) } ?: emptyList()
     }
 
     private val trackMap = mutableMapOf<String, PagedData<Track>>()
     override suspend fun loadAlbum(album: Album): Album {
-        val (ytmPlaylist, _, data) = playlistEndPoint.loadFromPlaylist(
-            album.id, null, thumbnailQuality
-        )
+        val (ytmPlaylist, _, data) = playlistEndPoint.loadFromPlaylist(album.id, null, thumbnailQuality)
         trackMap[ytmPlaylist.id] = data
         return ytmPlaylist.toAlbum(false, HIGH)
     }
@@ -576,36 +431,25 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     override fun loadTracks(album: Album): PagedData<Track> = trackMap[album.id]!!
 
     private suspend fun getArtistMediaItems(artist: Artist): List<Shelf> {
-        val result =
-            loadedArtist.takeIf { artist.id == it?.id } ?: api.LoadArtist.loadArtist(artist.id)
-                .getOrThrow()
-
+        val result = loadedArtist.takeIf { artist.id == it?.id } ?: api.LoadArtist.loadArtist(artist.id).getOrThrow()
         return result.layouts?.map {
             val title = it.title?.getString(ENGLISH)
             val single = title == SINGLES
             Shelf.Lists.Items(
                 title = it.title?.getString(language) ?: "Unknown",
                 subtitle = it.subtitle?.getString(language),
-                list = it.items?.mapNotNull { item ->
-                    item.toEchoMediaItem(single, thumbnailQuality)
-                } ?: emptyList(),
+                list = it.items?.mapNotNull { item -> item.toEchoMediaItem(single, thumbnailQuality) } ?: emptyList(),
                 more = it.view_more?.getBrowseParamsData()?.let { param ->
                     PagedData.Single {
                         val data = artistMoreEndpoint.load(param)
-                        data.map { row ->
-                            row.items.mapNotNull { item ->
-                                item.toEchoMediaItem(single, thumbnailQuality)
-                            }
-                        }.flatten()
+                        data.map { row -> row.items.mapNotNull { item -> item.toEchoMediaItem(single, thumbnailQuality) } }.flatten()
                     }
-                })
+                }
+            )
         } ?: emptyList()
     }
 
-    override fun getShelves(artist: Artist) = PagedData.Single {
-        getArtistMediaItems(artist)
-    }
-
+    override fun getShelves(artist: Artist) = PagedData.Single { getArtistMediaItems(artist) }
     override fun getShelves(user: User) = getShelves(user.toArtist())
 
     override suspend fun loadUser(user: User): User {
@@ -629,8 +473,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         val cont = playlist.extras["relatedId"] ?: throw Exception("No related id found.")
         if (cont.startsWith("id://")) {
             val id = cont.substring(5)
-            getShelves(loadTrack(Track(id, ""))).loadList(null).data
-                .filterIsInstance<Shelf.Category>()
+            getShelves(loadTrack(Track(id, ""))).loadList(null).data.filterIsInstance<Shelf.Category>()
         } else {
             val continuation = songRelatedEndpoint.loadFromPlaylist(cont).getOrThrow()
             continuation.map { it.toShelf(api, language, thumbnailQuality) }
@@ -638,11 +481,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     }
 
     override suspend fun loadPlaylist(playlist: Playlist): Playlist {
-        val (ytmPlaylist, related, data) = playlistEndPoint.loadFromPlaylist(
-            playlist.id,
-            null,
-            thumbnailQuality
-        )
+        val (ytmPlaylist, related, data) = playlistEndPoint.loadFromPlaylist(playlist.id, null, thumbnailQuality)
         trackMap[ytmPlaylist.id] = data
         return ytmPlaylist.toPlaylist(HIGH, related)
     }
@@ -660,7 +499,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 val id = cookie.split("SAPISID=")[1].split(";")[0]
                 val str = "$currentTime $id https://music.youtube.com"
                 val idHash = MessageDigest.getInstance("SHA-1").digest(str.toByteArray())
-                    .joinToString(separator = "") { eachByte -> "%02x".format(eachByte) }
+                    .joinToString("") { "%02x".format(it) }
                 "SAPISIDHASH ${currentTime}_${idHash}"
             }
             val headersMap = mutableMapOf("cookie" to cookie, "authorization" to auth)
@@ -680,13 +519,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         } else {
             val cookie = user.extras["cookie"] ?: throw Exception("No cookie")
             val auth = user.extras["auth"] ?: throw Exception("No auth")
-
             val headers = headers {
                 append("cookie", cookie)
                 append("authorization", auth)
             }
-            val authenticationState =
-                YoutubeiAuthenticationState(api, headers, user.id.ifEmpty { null })
+            val authenticationState = YoutubeiAuthenticationState(api, headers, user.id.ifEmpty { null })
             api.user_auth_state = authenticationState
         }
         api.visitor_id = visitorEndpoint.getVisitorId()
@@ -704,7 +541,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     }
 
     override val markAsPlayedDuration = 30000L
-
     override suspend fun onMarkAsPlayed(details: TrackDetails) {
         api.user_auth_state?.MarkSongAsWatched?.markSongAsWatched(details.track.id)?.getOrThrow()
     }
@@ -713,23 +549,17 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         Tab("FEmusic_library_landing", "All"),
         Tab("FEmusic_history", "History"),
         Tab("FEmusic_liked_playlists", "Playlists"),
-//        Tab("FEmusic_listening_review", "Review"),
+        // Tab("FEmusic_listening_review", "Review"),
         Tab("FEmusic_liked_videos", "Songs"),
         Tab("FEmusic_library_corpus_track_artists", "Artists")
     )
 
-    private suspend fun <T> withUserAuth(
-        block: suspend (auth: YoutubeiAuthenticationState) -> T
-    ): T {
-        val state = api.user_auth_state
-            ?: throw ClientException.LoginRequired()
+    private suspend fun <T> withUserAuth(block: suspend (auth: YoutubeiAuthenticationState) -> T): T {
+        val state = api.user_auth_state ?: throw ClientException.LoginRequired()
         return runCatching { block(state) }.getOrElse {
-            if (it is ClientRequestException) {
-                if (it.response.status.value == 401) {
-                    val user = state.own_channel_id
-                        ?: throw ClientException.LoginRequired()
-                    throw ClientException.Unauthorized(user)
-                }
+            if (it is ClientRequestException && it.response.status.value == 401) {
+                val user = state.own_channel_id ?: throw ClientException.LoginRequired()
+                throw ClientException.Unauthorized(user)
             }
             throw it
         }
@@ -738,17 +568,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     override fun getLibraryFeed(tab: Tab?) = PagedData.Continuous<Shelf> { cont ->
         val browseId = tab?.id ?: "FEmusic_library_landing"
         val (result, ctoken) = withUserAuth { libraryEndPoint.loadLibraryFeed(browseId, cont) }
-        val data = result.mapNotNull { playlist ->
-            playlist.toEchoMediaItem(false, thumbnailQuality)?.toShelf()
-        }
+        val data = result.mapNotNull { playlist -> playlist.toEchoMediaItem(false, thumbnailQuality)?.toShelf() }
         Page(data, ctoken)
     }.toFeed()
 
     override suspend fun createPlaylist(title: String, description: String?): Playlist {
         val playlistId = withUserAuth {
-            it.CreateAccountPlaylist
-                .createAccountPlaylist(title, description ?: "")
-                .getOrThrow()
+            it.CreateAccountPlaylist.createAccountPlaylist(title, description ?: "").getOrThrow()
         }
         return loadPlaylist(Playlist(playlistId, "", true))
     }
@@ -765,28 +591,21 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     override suspend fun listEditablePlaylists(track: Track?): List<Pair<Playlist, Boolean>> =
         withUserAuth { auth ->
             auth.AccountPlaylists.getAccountPlaylists().getOrThrow().mapNotNull {
-                if (it.id != "VLSE") it.toPlaylist(thumbnailQuality) to false
-                else null
+                if (it.id != "VLSE") it.toPlaylist(thumbnailQuality) to false else null
             }
         }
 
-    override suspend fun editPlaylistMetadata(
-        playlist: Playlist, title: String, description: String?
-    ) {
+    override suspend fun editPlaylistMetadata(playlist: Playlist, title: String, description: String?) {
         withUserAuth { auth ->
             val editor = auth.AccountPlaylistEditor.getEditor(playlist.id, listOf(), listOf())
-            editor.performAndCommitActions(
-                listOfNotNull(
-                    PlaylistEditor.Action.SetTitle(title),
-                    description?.let { PlaylistEditor.Action.SetDescription(it) }
-                )
-            )
+            editor.performAndCommitActions(listOfNotNull(
+                PlaylistEditor.Action.SetTitle(title),
+                description?.let { PlaylistEditor.Action.SetDescription(it) }
+            ))
         }
     }
 
-    override suspend fun removeTracksFromPlaylist(
-        playlist: Playlist, tracks: List<Track>, indexes: List<Int>
-    ) {
+    override suspend fun removeTracksFromPlaylist(playlist: Playlist, tracks: List<Track>, indexes: List<Int>) {
         val actions = indexes.map {
             val track = tracks[it]
             EchoEditPlaylistEndpoint.Action.Remove(track.id, track.extras["setId"]!!)
@@ -794,45 +613,28 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         editorEndpoint.editPlaylist(playlist.id, actions)
     }
 
-    override suspend fun addTracksToPlaylist(
-        playlist: Playlist, tracks: List<Track>, index: Int, new: List<Track>
-    ) {
+    override suspend fun addTracksToPlaylist(playlist: Playlist, tracks: List<Track>, index: Int, new: List<Track>) {
         val actions = new.map { EchoEditPlaylistEndpoint.Action.Add(it.id) }
         val setIds = editorEndpoint.editPlaylist(playlist.id, actions).playlistEditResults!!.map {
             it.playlistEditVideoAddedResultData.setVideoId
         }
         val addBeforeTrack = tracks.getOrNull(index)?.extras?.get("setId") ?: return
-        val moveActions = setIds.map { setId ->
-            EchoEditPlaylistEndpoint.Action.Move(setId, addBeforeTrack)
-        }
+        val moveActions = setIds.map { setId -> EchoEditPlaylistEndpoint.Action.Move(setId, addBeforeTrack) }
         editorEndpoint.editPlaylist(playlist.id, moveActions)
     }
 
-    override suspend fun moveTrackInPlaylist(
-        playlist: Playlist, tracks: List<Track>, fromIndex: Int, toIndex: Int
-    ) {
+    override suspend fun moveTrackInPlaylist(playlist: Playlist, tracks: List<Track>, fromIndex: Int, toIndex: Int) {
         val setId = tracks[fromIndex].extras["setId"]!!
         val before = if (fromIndex - toIndex > 0) 0 else 1
-        val addBeforeTrack = tracks.getOrNull(toIndex + before)?.extras?.get("setId")
-            ?: return
-        editorEndpoint.editPlaylist(
-            playlist.id, listOf(
-                EchoEditPlaylistEndpoint.Action.Move(setId, addBeforeTrack)
-            )
-        )
+        val addBeforeTrack = tracks.getOrNull(toIndex + before)?.extras?.get("setId") ?: return
+        editorEndpoint.editPlaylist(playlist.id, listOf(EchoEditPlaylistEndpoint.Action.Move(setId, addBeforeTrack)))
     }
 
     override fun searchTrackLyrics(clientId: String, track: Track) = PagedData.Single {
         val lyricsId = track.extras["lyricsId"] ?: return@Single listOf()
         val data = lyricsEndPoint.getLyrics(lyricsId) ?: return@Single listOf()
         val lyrics = data.first.map {
-            it.cueRange.run {
-                Lyrics.Item(
-                    it.lyricLine,
-                    startTimeMilliseconds.toLong(),
-                    endTimeMilliseconds.toLong()
-                )
-            }
+            it.cueRange.run { Lyrics.Item(it.lyricLine, startTimeMilliseconds.toLong(), endTimeMilliseconds.toLong()) }
         }
         listOf(Lyrics(lyricsId, track.title, data.second, Lyrics.Timed(lyrics)))
     }
