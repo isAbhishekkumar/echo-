@@ -66,12 +66,8 @@ import io.ktor.client.plugins.ClientRequestException
 import io.ktor.client.request.headers
 import io.ktor.client.request.request
 import io.ktor.http.headers
-import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.encodeToString
 import java.security.MessageDigest
 
@@ -115,30 +111,25 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     val api = YoutubeiApi(
         data_language = ENGLISH
     )
-
-    // Thread-safe, idempotent visitor ID initialization
-    private val visitorMutex = Mutex()
-    @Volatile private var visitorInitTried = false
+    
+    // Ensure visitor ID is initialized before any API calls
     private suspend fun ensureVisitorId() {
         try {
-            if (api.visitor_id != null) return
-            visitorMutex.withLock {
-                if (api.visitor_id != null) return
-                if (visitorInitTried) return
-                println("DEBUG: Initializing visitor ID")
-                visitorInitTried = true
-                runCatching { api.visitor_id = visitorEndpoint.getVisitorId() }
-                    .onSuccess { println("DEBUG: Got visitor ID: ${api.visitor_id}") }
-                    .onFailure {
-                        println("DEBUG: Failed to initialize visitor ID: ${it.message}")
-                        visitorInitTried = false // allow retry later
-                    }
+            println("DEBUG: Checking visitor ID, current: ${api.visitor_id}")
+            if (api.visitor_id == null) {
+                println("DEBUG: Getting new visitor ID")
+                api.visitor_id = visitorEndpoint.getVisitorId()
+                println("DEBUG: Got visitor ID: ${api.visitor_id}")
+            } else {
+                println("DEBUG: Visitor ID already exists: ${api.visitor_id}")
             }
-        } catch (_: Exception) {
-            // Non-fatal: some endpoints work without visitor ID
+        } catch (e: Exception) {
+            println("DEBUG: Failed to initialize visitor ID: ${e.message}")
+            // If visitor ID initialization fails, try to continue without it
+            // Some endpoints might work without visitor ID
         }
     }
-
+    
     private val thumbnailQuality
         get() = if (settings.getBoolean("high_quality") == true) HIGH else LOW
 
@@ -199,171 +190,221 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         return newTrack
     }
 
-    private fun baseUrl(url: String): String {
-        val idx = url.indexOf('?')
-        return if (idx != -1) url.substring(0, idx) else url
-    }
-
     override suspend fun loadStreamableMedia(
         streamable: Streamable, isDownload: Boolean
     ): Streamable.Media {
         return when (streamable.type) {
             Streamable.MediaType.Server -> when (streamable.id) {
-                "DUAL_STREAM" -> {
-                    // Provides both HLS and MP3. HLS is prioritized and merged flag is set when present.
-                    println("DEBUG: Loading dual-stream for videoId: ${streamable.extras["videoId"]}")
+                "SMART_STREAM" -> {
+                    // Simplified smart streaming with better error handling
+                    println("DEBUG: Loading smart stream for videoId: ${streamable.extras["videoId"]}")
+                    
+                    // Ensure visitor ID is initialized
                     ensureVisitorId()
-
+                    
                     val videoId = streamable.extras["videoId"]!!
                     var lastError: Exception? = null
-                    var resetDone = false
-
-                    for (attempt in 1..6) {
+                    
+                    // Try up to 5 times with exponential backoff
+                    for (attempt in 1..5) {
                         try {
-                            println("DEBUG: DUAL_STREAM attempt $attempt of 6")
-                            val useDifferentParams = attempt % 2 == 0
-                            if (attempt == 4 && !resetDone) {
-                                println("DEBUG: Resetting visitor ID on dual-stream attempt $attempt")
+                            println("DEBUG: Smart stream attempt $attempt of 5")
+                            
+                            // Progressive strategy: start simple, add complexity only if needed
+                            val useSimpleParams = attempt <= 2
+                            val resetVisitorOnFailure = attempt > 3
+                            
+                            if (resetVisitorOnFailure && lastError != null) {
+                                println("DEBUG: Resetting visitor ID after failures")
                                 api.visitor_id = null
-                                visitorInitTried = false
                                 ensureVisitorId()
-                                resetDone = true
                             }
-
-                            val (video, _) = videoEndpoint.getVideo(useDifferentParams, videoId)
+                            
+                            val (video, _) = videoEndpoint.getVideo(useSimpleParams, videoId)
                             val sources = mutableListOf<Streamable.Source.Http>()
-
-                            // HLS first with very high quality so it is chosen
-                            val hlsUrl = video.streamingData.hlsManifestUrl
-                            val hasHls = hlsUrl != null
-                            if (hasHls) {
+                            
+                            // Priority 1: Get HLS stream (most reliable for continuous playback)
+                            video.streamingData.hlsManifestUrl?.let { hlsUrl ->
+                                // Only add minimal cache busting for HLS
+                                val timestamp = System.currentTimeMillis()
+                                val finalHlsUrl = if (hlsUrl.contains("?")) {
+                                    "$hlsUrl&t=$timestamp"
+                                } else {
+                                    "$hlsUrl?t=$timestamp"
+                                }
+                                
                                 sources.add(
                                     Streamable.Source.Http(
-                                        hlsUrl!!.toRequest(),
-                                        quality = 1_000_000 - attempt
+                                        finalHlsUrl.toRequest(),
+                                        quality = 1000 // High priority for HLS
+                                    )
+                                )
+                                println("DEBUG: Added HLS stream on attempt $attempt")
+                            }
+                            
+                            // Priority 2: Get best audio streams (fallback)
+                            val audioFormats = video.streamingData.adaptiveFormats
+                                .filter { it.mimeType.contains("audio") && it.url != null }
+                                .sortedByDescending { it.audioSampleRate ?: 0 }
+                            
+                            audioFormats.forEach { format ->
+                                val audioUrl = format.url!!
+                                // Minimal URL modification for audio
+                                val timestamp = System.currentTimeMillis()
+                                val finalAudioUrl = if (audioUrl.contains("?")) {
+                                    "$audioUrl&t=$timestamp"
+                                } else {
+                                    "$audioUrl?t=$timestamp"
+                                }
+                                
+                                sources.add(
+                                    Streamable.Source.Http(
+                                        finalAudioUrl.toRequest(),
+                                        quality = format.audioSampleRate ?: 0
                                     )
                                 )
                             }
-
-                            // Progressive audio as fallback
-                            video.streamingData.adaptiveFormats.forEach { fmt ->
-                                val mime = fmt.mimeType
-                                val url = fmt.url
-                                if (mime != null && mime.contains("audio") && url != null) {
-                                    val q = fmt.audioSampleRate?.toString()?.toIntOrNull() ?: 48000
-                                    sources.add(Streamable.Source.Http(url.toRequest(), quality = q))
-                                }
+                            
+                            println("DEBUG: Total sources created: ${sources.size}")
+                            
+                            if (sources.isNotEmpty()) {
+                                // Return with live=false for better compatibility
+                                return Streamable.Media.Server(sources, false)
+                            } else {
+                                throw Exception("No valid streams found")
                             }
-
-                            val deduped = sources.distinctBy { baseUrl(it.request.url) }
-                            if (deduped.isNotEmpty()) {
-                                println("DEBUG: DUAL_STREAM attempt $attempt succeeded with ${deduped.size} sources (hasHls=$hasHls)")
-                                return Streamable.Media.Server(deduped, hasHls)
-                            }
+                            
                         } catch (e: Exception) {
                             lastError = e
-                            println("DEBUG: DUAL_STREAM attempt $attempt failed: ${e.message}")
-                            if (attempt < 6) delay(200L + java.util.Random().nextInt(100))
+                            println("DEBUG: Smart stream attempt $attempt failed: ${e.message}")
+                            
+                            // Exponential backoff with jitter
+                            if (attempt < 5) {
+                                val baseDelay = 300L * attempt // 300ms, 600ms, 900ms, 1200ms
+                                val jitter = (0..100).random()
+                                kotlinx.coroutines.delay(baseDelay + jitter)
+                            }
                         }
                     }
-                    throw lastError ?: Exception("All dual-stream attempts failed")
+                    
+                    throw lastError ?: Exception("All smart stream attempts failed")
                 }
-
-                "VIDEO_M3U8" -> {
-                    // Legacy HLS support
+                
+                "AUDIO_ONLY" -> {
+                    // Dedicated audio-only streaming
+                    println("DEBUG: Loading audio-only stream for videoId: ${streamable.extras["videoId"]}")
+                    
                     ensureVisitorId()
-                    println("DEBUG: Loading HLS for videoId: ${streamable.extras["videoId"]}")
+                    val videoId = streamable.extras["videoId"]!!
                     var lastError: Exception? = null
-                    var resetDone = false
-
-                    for (attempt in 1..8) {
+                    
+                    for (attempt in 1..4) {
                         try {
-                            println("DEBUG: VIDEO_M3U8 attempt $attempt of 8")
-                            val useDifferentParams = attempt % 2 == 0
-                            if (attempt == 5 && !resetDone) {
-                                println("DEBUG: Resetting visitor ID on VIDEO_M3U8 attempt $attempt")
-                                api.visitor_id = null
-                                visitorInitTried = false
-                                ensureVisitorId()
-                                resetDone = true
+                            println("DEBUG: Audio-only attempt $attempt of 4")
+                            
+                            val (video, _) = videoEndpoint.getVideo(attempt % 2 == 0, videoId)
+                            
+                            val audioSources = video.streamingData.adaptiveFormats
+                                .filter { it.mimeType.contains("audio") && it.url != null }
+                                .sortedByDescending { it.audioSampleRate ?: 0 }
+                                .map { format ->
+                                    val audioUrl = format.url!!
+                                    val timestamp = System.currentTimeMillis()
+                                    val finalUrl = if (audioUrl.contains("?")) {
+                                        "$audioUrl&t=$timestamp&q=${format.audioSampleRate}"
+                                    } else {
+                                        "$audioUrl?t=$timestamp&q=${format.audioSampleRate}"
+                                    }
+                                    
+                                    Streamable.Source.Http(
+                                        finalUrl.toRequest(),
+                                        quality = format.audioSampleRate ?: 0
+                                    )
+                                }
+                            
+                            if (audioSources.isNotEmpty()) {
+                                println("DEBUG: Audio-only success with ${audioSources.size} sources")
+                                return Streamable.Media.Server(audioSources, false)
+                            } else {
+                                throw Exception("No audio formats found")
                             }
-
-                            val (video, _) = videoEndpoint.getVideo(useDifferentParams, streamable.extras["videoId"]!!)
-                            val hlsManifestUrl = video.streamingData.hlsManifestUrl
-                                ?: throw Exception("No HLS manifest URL found")
-                            return Streamable.Media.Server(
-                                listOf(Streamable.Source.Http(hlsManifestUrl.toRequest(), quality = 1_000_000)),
-                                true
-                            )
+                            
                         } catch (e: Exception) {
                             lastError = e
-                            println("DEBUG: VIDEO_M3U8 attempt $attempt failed: ${e.message}")
-                            if (attempt < 8) delay(200L + java.util.Random().nextInt(100))
+                            println("DEBUG: Audio-only attempt $attempt failed: ${e.message}")
+                            
+                            if (attempt < 4) {
+                                kotlinx.coroutines.delay(200L * attempt)
+                            }
                         }
                     }
+                    
+                    throw lastError ?: Exception("All audio-only attempts failed")
+                }
+                
+                "VIDEO_HLS" -> {
+                    // Dedicated HLS streaming
+                    println("DEBUG: Loading HLS stream for videoId: ${streamable.extras["videoId"]}")
+                    
+                    ensureVisitorId()
+                    val videoId = streamable.extras["videoId"]!!
+                    var lastError: Exception? = null
+                    
+                    for (attempt in 1..4) {
+                        try {
+                            println("DEBUG: HLS attempt $attempt of 4")
+                            
+                            val (video, _) = videoEndpoint.getVideo(attempt % 2 == 0, videoId)
+                            val hlsUrl = video.streamingData.hlsManifestUrl
+                                ?: throw Exception("No HLS URL available")
+                            
+                            // Minimal URL modification for HLS
+                            val timestamp = System.currentTimeMillis()
+                            val finalHlsUrl = if (hlsUrl.contains("?")) {
+                                "$hlsUrl&t=$timestamp&attempt=$attempt"
+                            } else {
+                                "$hlsUrl?t=$timestamp&attempt=$attempt"
+                            }
+                            
+                            val hlsSource = Streamable.Source.Http(
+                                finalHlsUrl.toRequest(),
+                                quality = 0
+                            )
+                            
+                            println("DEBUG: HLS success on attempt $attempt")
+                            return Streamable.Media.Server(listOf(hlsSource), true)
+                            
+                        } catch (e: Exception) {
+                            lastError = e
+                            println("DEBUG: HLS attempt $attempt failed: ${e.message}")
+                            
+                            if (attempt < 4) {
+                                kotlinx.coroutines.delay(300L * attempt)
+                            }
+                        }
+                    }
+                    
                     throw lastError ?: Exception("All HLS attempts failed")
                 }
-
-                "AUDIO_MP3" -> {
-                    // Progressive audio retrieval, with optional HLS as a hidden fallback if available.
-                    ensureVisitorId()
-                    println("DEBUG: Loading audio for videoId: ${streamable.extras["videoId"]}")
-
-                    var lastError: Exception? = null
-                    var resetDone = false
-
-                    for (attempt in 1..8) {
-                        try {
-                            println("DEBUG: AUDIO_MP3 attempt $attempt of 8")
-                            val useDifferentParams = attempt % 2 == 0
-                            if (attempt == 5 && !resetDone) {
-                                println("DEBUG: Resetting visitor ID on AUDIO_MP3 attempt $attempt")
-                                api.visitor_id = null
-                                visitorInitTried = false
-                                ensureVisitorId()
-                                resetDone = true
-                            }
-
-                            val (video, _) = videoEndpoint.getVideo(useDifferentParams, streamable.extras["videoId"]!!)
-                            val sources = mutableListOf<Streamable.Source.Http>()
-
-                            // Optional HLS fallback (hidden) to avoid 403 on direct audio when available
-                            val hls = video.streamingData.hlsManifestUrl
-                            val hasHls = hls != null
-                            if (hasHls) {
-                                println("DEBUG: AUDIO_MP3: HLS available, adding as fallback-first")
-                                sources.add(Streamable.Source.Http(hls!!.toRequest(), quality = 1_000_000 - attempt))
-                            }
-
-                            val audioFormats = video.streamingData.adaptiveFormats.mapNotNull { fmt ->
-                                val mime = fmt.mimeType
-                                val url = fmt.url
-                                if (mime != null && mime.contains("audio") && url != null) {
-                                    val q = fmt.audioSampleRate?.toString()?.toIntOrNull() ?: 48000
-                                    Streamable.Source.Http(url.toRequest(), quality = q)
-                                } else null
-                            }
-
-                            sources.addAll(audioFormats)
-
-                            val deduped = sources.distinctBy { baseUrl(it.request.url) }
-                            if (deduped.isEmpty()) throw Exception("No audio formats found")
-
-                            // If HLS included, set merged=true for correct pipeline
-                            return Streamable.Media.Server(deduped, hasHls)
-                        } catch (e: Exception) {
-                            lastError = e
-                            println("DEBUG: AUDIO_MP3 attempt $attempt failed: ${e.message}")
-                            if (attempt < 8) delay(200L + java.util.Random().nextInt(100))
-                        }
-                    }
-                    throw lastError ?: Exception("All audio attempts failed")
+                
+                // Keep legacy support
+                "DUAL_STREAM", "VIDEO_M3U8", "AUDIO_MP3" -> {
+                    println("DEBUG: Legacy streamable ${streamable.id}, redirecting to SMART_STREAM")
+                    // Redirect legacy calls to smart stream
+                    return loadStreamableMedia(
+                        Streamable.server(
+                            "SMART_STREAM",
+                            streamable.quality,
+                            "Smart Stream",
+                            streamable.extras
+                        ),
+                        isDownload
+                    )
                 }
-
+                
                 else -> throw IllegalArgumentException("Unknown server streamable ID: ${streamable.id}")
             }
-
-            // Add other MediaType cases to make when exhaustive
+            
             Streamable.MediaType.Background -> throw IllegalArgumentException("Background media type not supported")
             Streamable.MediaType.Subtitle -> throw IllegalArgumentException("Subtitle media type not supported")
         }
@@ -372,65 +413,108 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     override suspend fun loadTrack(track: Track) = coroutineScope {
         // Ensure visitor ID is initialized
         ensureVisitorId()
-
+        
         println("DEBUG: Loading track: ${track.title} (${track.id})")
-
-        val deferred = async(start = CoroutineStart.LAZY) { songEndPoint.loadSong(track.id).getOrThrow() }
+        
+        val deferred = async { songEndPoint.loadSong(track.id).getOrThrow() }
         val (video, type) = videoEndpoint.getVideo(true, track.id)
         val isMusic = type == "MUSIC_VIDEO_TYPE_ATV"
 
         println("DEBUG: Video type: $type, isMusic: $isMusic")
 
         val resolvedTrack = if (resolveMusicForVideos && !isMusic) {
-            searchSongForVideo(video.videoDetails.title.orEmpty(), video.videoDetails.author)
+            searchSongForVideo(video.videoDetails.title!!, video.videoDetails.author)
         } else null
 
-        val hlsUrl = video.streamingData.hlsManifestUrl // safe call
-        val audioFiles = video.streamingData.adaptiveFormats.mapNotNull {
-            val mime = it.mimeType
-            val url = it.url
-            if (mime != null && mime.contains("audio") && url != null) {
-                it.audioSampleRate.toString() to url
-            } else null
-        }.toMap()
-
-        println("DEBUG: Audio formats found: ${audioFiles.keys}")
-        println("DEBUG: HLS URL available: ${hlsUrl != null}")
-
+        val hasHls = video.streamingData.hlsManifestUrl != null
+        val hasAudio = video.streamingData.adaptiveFormats.any { 
+            it.mimeType.contains("audio") && it.url != null 
+        }
+        
+        println("DEBUG: HLS available: $hasHls, Audio formats: $hasAudio")
+        
         val newTrack = resolvedTrack ?: deferred.await()
+        
+        // Create streamables based on what's available and user preferences
+        val streamables = mutableListOf<Streamable>()
+        
+        when {
+            // Music videos or when videos are disabled - prioritize audio
+            isMusic || !showVideos -> {
+                if (hasAudio) {
+                    streamables.add(
+                        Streamable.server(
+                            "AUDIO_ONLY",
+                            0,
+                            "Audio Only",
+                            mapOf("videoId" to track.id)
+                        )
+                    )
+                }
+                if (hasHls && showVideos) {
+                    streamables.add(
+                        Streamable.server(
+                            "VIDEO_HLS",
+                            1,
+                            "Video Stream",
+                            mapOf("videoId" to track.id)
+                        )
+                    )
+                }
+            }
+            
+            // Regular videos with preference handling
+            else -> {
+                if (preferVideos) {
+                    // Video first, then audio fallback
+                    if (hasHls) {
+                        streamables.add(
+                            Streamable.server(
+                                "SMART_STREAM",
+                                0,
+                                "Smart Stream (Video + Audio)",
+                                mapOf("videoId" to track.id)
+                            )
+                        )
+                    }
+                    if (hasAudio) {
+                        streamables.add(
+                            Streamable.server(
+                                "AUDIO_ONLY",
+                                1,
+                                "Audio Fallback",
+                                mapOf("videoId" to track.id)
+                            )
+                        )
+                    }
+                } else {
+                    // Audio first, then video
+                    streamables.add(
+                        Streamable.server(
+                            "SMART_STREAM",
+                            0,
+                            "Smart Stream (Audio + Video)",
+                            mapOf("videoId" to track.id)
+                        )
+                    )
+                }
+            }
+        }
+        
         val resultTrack = newTrack.copy(
             description = video.videoDetails.shortDescription,
             artists = newTrack.artists.ifEmpty {
                 video.videoDetails.run { listOf(Artist(channelId, author)) }
             },
-            streamables = listOfNotNull(
-                Streamable.server(
-                    "DUAL_STREAM",
-                    0,
-                    "Dual Stream (HLS + MP3)",
-                    mapOf("videoId" to track.id)
-                ).takeIf { !isMusic && (showVideos || audioFiles.isNotEmpty()) },
-                Streamable.server(
-                    "VIDEO_M3U8",
-                    0,
-                    "Video M3U8",
-                    mapOf("videoId" to track.id)
-                ).takeIf { !isMusic && showVideos && audioFiles.isEmpty() }, // Fallback if no audio files
-                Streamable.server(
-                    "AUDIO_MP3",
-                    0,
-                    "Audio MP3",
-                    mutableMapOf<String, String>().apply { put("videoId", track.id) }
-                ).takeIf { audioFiles.isNotEmpty() && (!showVideos || isMusic) }, // Fallback if videos disabled or music-only
-            ).let { if (preferVideos) it else it.reversed() },
+            streamables = streamables,
             plays = video.videoDetails.viewCount?.toLongOrNull()
         )
-
-        println("DEBUG: Streamables created: ${resultTrack.streamables.size}")
-        resultTrack.streamables.forEach { streamable ->
-            println("DEBUG: Streamable: ${streamable.id} with extras: ${streamable.extras.keys}")
+        
+        println("DEBUG: Created ${streamables.size} streamables for track")
+        streamables.forEach { streamable ->
+            println("DEBUG: Streamable: ${streamable.id} (quality: ${streamable.quality})")
         }
-
+        
         resultTrack
     }
 
@@ -686,7 +770,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             api.user_auth_state = authenticationState
         }
         api.visitor_id = visitorEndpoint.getVisitorId()
-        visitorInitTried = api.visitor_id != null
     }
 
     override suspend fun getCurrentUser(): User? {
