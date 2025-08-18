@@ -76,21 +76,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     TrackerClient, LibraryFeedClient, ShareClient, LyricsClient, ArtistFollowClient,
     TrackLikeClient, PlaylistEditClient {
 
-    // Error handling state
-    private var retryCount = 0
-    private var currentAudioSourceIndex = 0
-    private var lastErrorTime = 0L
-    private var currentVideoId = ""
-    
-    // Server types for retry logic
-    private val AUDIO_SOURCE_TYPES = listOf(
-        "Audio MP3", "Audio MP4", "Audio WebM", "Combined MP4", "Combined WebM", "HLS Stream"
-    )
-    
-    // Error handling constants
-    private val MAX_RETRIES = 6
-    private val RETRY_DELAY_MS = 1000L // 1 second between retries
-
     override val settingItems: List<Setting> = listOf(
         SettingSwitch(
             "Prefer Videos",
@@ -177,308 +162,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         const val SINGLES = "Singles"
         const val SONGS = "songs"
     }
-    
-    // Error handling and toast simulation functions
-    private fun showToast(title: String, message: String, isLong: Boolean = false) {
-        // This would interface with the Android app's toast system
-        // For now, we'll just log it
-        println("TOAST[$title]: $message")
-        
-        // In a real implementation, this would call:
-        // android.widget.Toast.makeText(context, message, if (isLong) Toast.LENGTH_LONG else Toast.LENGTH_SHORT).show()
-    }
-    
-    private fun resetRetryState() {
-        retryCount = 0
-        currentAudioSourceIndex = 0
-        lastErrorTime = 0L
-    }
-    
-    private fun isRetryableError(error: Exception): Boolean {
-        val errorMessage = error.message?.lowercase() ?: ""
-        return errorMessage.contains("403") || 
-               errorMessage.contains("forbidden") ||
-               errorMessage.contains("skipping atom with length") ||
-               errorMessage.contains("network error") ||
-               error is ClientRequestException ||
-               error is ConnectTimeoutException
-    }
-    
-    private fun getNextAudioSource(): String {
-        val nextSource = AUDIO_SOURCE_TYPES[currentAudioSourceIndex]
-        currentAudioSourceIndex = (currentAudioSourceIndex + 1) % AUDIO_SOURCE_TYPES.size
-        return nextSource
-    }
-    
-    private suspend fun handleStreamError(error: Exception, currentSource: String, videoId: String): Streamable.Media {
-        val currentTime = System.currentTimeMillis()
-        
-        if (isRetryableError(error) && retryCount < MAX_RETRIES) {
-            val nextSource = getNextAudioSource()
-            
-            // Show retry toast with "Other server" message
-            showToast(
-                "Stream Error", 
-                "Retrying with Other server (${retryCount + 1}/$MAX_RETRIES)",
-                isLong = true
-            )
-            
-            println("DEBUG: Error: ${error.message}")
-            println("DEBUG: Retrying with $nextSource (attempt ${retryCount + 1}/$MAX_RETRIES)")
-            
-            // Update retry state
-            retryCount++
-            lastErrorTime = currentTime
-            currentVideoId = videoId
-            
-            // Wait before retry
-            kotlinx.coroutines.delay(RETRY_DELAY_MS)
-            
-            // Try the next audio source type
-            return tryAudioSource(nextSource, videoId)
-        } else {
-            // Max retries reached or non-retryable error
-            showToast(
-                "Stream Error", 
-                "Failed to load stream after $retryCount attempts. Please try again later.",
-                isLong = true
-            )
-            
-            println("DEBUG: Max retries reached or non-retryable error: ${error.message}")
-            
-            // Reset retry state
-            resetRetryState()
-            throw error
-        }
-    }
-    
-    private suspend fun tryAudioSource(sourceType: String, videoId: String): Streamable.Media {
-        println("DEBUG: Trying audio source: $sourceType for videoId: $videoId")
-        
-        return when (sourceType) {
-            "Audio MP3" -> loadAudioOnlyStream(videoId, "mp3")
-            "Audio MP4" -> loadAudioOnlyStream(videoId, "mp4")
-            "Audio WebM" -> loadAudioOnlyStream(videoId, "webm")
-            "Combined MP4" -> loadCombinedStream(videoId, "mp4")
-            "Combined WebM" -> loadCombinedStream(videoId, "webm")
-            "HLS Stream" -> loadHlsStream(videoId)
-            else -> throw IllegalArgumentException("Unknown audio source type: $sourceType")
-        }
-    }
-    
-    private suspend fun loadAudioOnlyStream(videoId: String, formatType: String): Streamable.Media {
-        println("DEBUG: Loading audio-only stream: $formatType for videoId: $videoId")
-        
-        // Ensure visitor ID is initialized
-        ensureVisitorId()
-        
-        var lastError: Exception? = null
-        for (attempt in 1..3) { // Try 3 times for this specific format
-            try {
-                println("DEBUG: Audio-only $formatType attempt $attempt of 3")
-                
-                val useDifferentParams = attempt % 2 == 0
-                val resetVisitor = attempt > 1
-                
-                if (resetVisitor) {
-                    println("DEBUG: Resetting visitor ID for audio-only $formatType attempt $attempt")
-                    api.visitor_id = null
-                    ensureVisitorId()
-                }
-                
-                val (video, _) = videoEndpoint.getVideo(useDifferentParams, videoId)
-                val baseTimestamp = System.currentTimeMillis()
-                val futureTimestamp = baseTimestamp + (4 * 60 * 60 * 1000)
-                val random = java.util.Random().nextInt(1000000) + attempt
-                val sessionId = "session_${System.currentTimeMillis()}_${attempt}"
-                
-                val audioSources = mutableListOf<Streamable.Source.Http>()
-                
-                video.streamingData.adaptiveFormats.forEach { format ->
-                    val mimeType = format.mimeType.lowercase()
-                    val originalUrl = format.url ?: return@forEach
-                    
-                    // Filter for audio-only formats of the requested type
-                    val isTargetFormat = when (formatType) {
-                        "mp3" -> mimeType.contains("audio/mp3") || mimeType.contains("audio/mpeg")
-                        "mp4" -> mimeType.contains("audio/mp4")
-                        "webm" -> mimeType.contains("audio/webm")
-                        else -> false
-                    }
-                    
-                    if (isTargetFormat && !mimeType.contains("video")) {
-                        val freshUrl = if (originalUrl.contains("?")) {
-                            "$originalUrl&cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=${attempt}_audio"
-                        } else {
-                            "$originalUrl?cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=${attempt}_audio"
-                        }
-                        
-                        val quality = format.audioSampleRate?.toInt() ?: 0
-                        audioSources.add(
-                            Streamable.Source.Http(
-                                freshUrl.toRequest(),
-                                quality = quality
-                            )
-                        )
-                    }
-                }
-                
-                if (audioSources.isNotEmpty()) {
-                    println("DEBUG: Found ${audioSources.size} audio-only $formatType sources")
-                    return Streamable.Media.Server(audioSources, false)
-                } else {
-                    throw Exception("No audio-only $formatType streams found")
-                }
-                
-            } catch (e: Exception) {
-                lastError = e
-                println("DEBUG: Audio-only $formatType attempt $attempt failed: ${e.message}")
-                
-                if (attempt < 3) {
-                    val delayTime = 200L + java.util.Random().nextInt(100)
-                    kotlinx.coroutines.delay(delayTime)
-                }
-            }
-        }
-        
-        throw lastError ?: Exception("All audio-only $formatType attempts failed")
-    }
-    
-    private suspend fun loadCombinedStream(videoId: String, formatType: String): Streamable.Media {
-        println("DEBUG: Loading combined stream: $formatType for videoId: $videoId")
-        
-        // Ensure visitor ID is initialized
-        ensureVisitorId()
-        
-        var lastError: Exception? = null
-        for (attempt in 1..3) { // Try 3 times for this specific format
-            try {
-                println("DEBUG: Combined $formatType attempt $attempt of 3")
-                
-                val useDifferentParams = attempt % 2 == 0
-                val resetVisitor = attempt > 1
-                
-                if (resetVisitor) {
-                    println("DEBUG: Resetting visitor ID for combined $formatType attempt $attempt")
-                    api.visitor_id = null
-                    ensureVisitorId()
-                }
-                
-                val (video, _) = videoEndpoint.getVideo(useDifferentParams, videoId)
-                val baseTimestamp = System.currentTimeMillis()
-                val futureTimestamp = baseTimestamp + (4 * 60 * 60 * 1000)
-                val random = java.util.Random().nextInt(1000000) + attempt
-                val sessionId = "session_${System.currentTimeMillis()}_${attempt}"
-                
-                val combinedSources = mutableListOf<Streamable.Source.Http>()
-                
-                video.streamingData.adaptiveFormats.forEach { format ->
-                    val mimeType = format.mimeType.lowercase()
-                    val originalUrl = format.url ?: return@forEach
-                    
-                    // Filter for combined audio+video formats of the requested type
-                    val isTargetFormat = when (formatType) {
-                        "mp4" -> mimeType.contains("video/mp4") && mimeType.contains("audio")
-                        "webm" -> mimeType.contains("video/webm") && mimeType.contains("audio")
-                        else -> false
-                    }
-                    
-                    if (isTargetFormat) {
-                        val freshUrl = if (originalUrl.contains("?")) {
-                            "$originalUrl&cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=${attempt}_combined"
-                        } else {
-                            "$originalUrl?cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=${attempt}_combined"
-                        }
-                        
-                        val quality = ((format.height ?: 0) * 1000 + (format.bitrate ?: 0) / 1000).toInt()
-                        combinedSources.add(
-                            Streamable.Source.Http(
-                                freshUrl.toRequest(),
-                                quality = quality
-                            )
-                        )
-                    }
-                }
-                
-                if (combinedSources.isNotEmpty()) {
-                    println("DEBUG: Found ${combinedSources.size} combined $formatType sources")
-                    return Streamable.Media.Server(combinedSources, false)
-                } else {
-                    throw Exception("No combined $formatType streams found")
-                }
-                
-            } catch (e: Exception) {
-                lastError = e
-                println("DEBUG: Combined $formatType attempt $attempt failed: ${e.message}")
-                
-                if (attempt < 3) {
-                    val delayTime = 200L + java.util.Random().nextInt(100)
-                    kotlinx.coroutines.delay(delayTime)
-                }
-            }
-        }
-        
-        throw lastError ?: Exception("All combined $formatType attempts failed")
-    }
-    
-    private suspend fun loadHlsStream(videoId: String): Streamable.Media {
-        println("DEBUG: Loading HLS stream for videoId: $videoId")
-        
-        // Ensure visitor ID is initialized
-        ensureVisitorId()
-        
-        var lastError: Exception? = null
-        for (attempt in 1..3) { // Try 3 times for HLS
-            try {
-                println("DEBUG: HLS attempt $attempt of 3")
-                
-                val useDifferentParams = attempt % 2 == 0
-                val resetVisitor = attempt > 1
-                
-                if (resetVisitor) {
-                    println("DEBUG: Resetting visitor ID for HLS attempt $attempt")
-                    api.visitor_id = null
-                    ensureVisitorId()
-                }
-                
-                val (video, _) = videoEndpoint.getVideo(useDifferentParams, videoId)
-                val hlsManifestUrl = video.streamingData.hlsManifestUrl
-                
-                if (hlsManifestUrl != null) {
-                    val baseTimestamp = System.currentTimeMillis()
-                    val futureTimestamp = baseTimestamp + (4 * 60 * 60 * 1000)
-                    val random = java.util.Random().nextInt(1000000) + attempt
-                    val sessionId = "session_${System.currentTimeMillis()}_${attempt}"
-                    
-                    val freshUrl = if (hlsManifestUrl.contains("?")) {
-                        "$hlsManifestUrl&cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=${attempt}_hls"
-                    } else {
-                        "$hlsManifestUrl?cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=${attempt}_hls"
-                    }
-                    
-                    val hlsSources = listOf(
-                        Streamable.Source.Http(freshUrl.toRequest(), quality = 0)
-                    )
-                    
-                    println("DEBUG: HLS stream loaded successfully")
-                    return Streamable.Media.Server(hlsSources, true)
-                } else {
-                    throw Exception("No HLS manifest URL found")
-                }
-                
-            } catch (e: Exception) {
-                lastError = e
-                println("DEBUG: HLS attempt $attempt failed: ${e.message}")
-                
-                if (attempt < 3) {
-                    val delayTime = 200L + java.util.Random().nextInt(100)
-                    kotlinx.coroutines.delay(delayTime)
-                }
-            }
-        }
-        
-        throw lastError ?: Exception("All HLS attempts failed")
-    }
 
     override suspend fun getHomeTabs() = listOf<Tab>()
 
@@ -512,56 +195,435 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         return when (streamable.type) {
             Streamable.MediaType.Server -> when (streamable.id) {
                 "DUAL_STREAM" -> {
-                    // Enhanced multi-format system with comprehensive error handling
+                    // Enhanced multi-format system: HLS + MP3 + MP4 + WebM + other formats
                     println("DEBUG: Loading multi-format stream for videoId: ${streamable.extras["videoId"]}")
                     
-                    // Reset retry state for new stream request
-                    resetRetryState()
+                    // Ensure visitor ID is initialized
+                    ensureVisitorId()
                     
                     val videoId = streamable.extras["videoId"]!!
+                    var allSources = mutableListOf<Streamable.Source.Http>()
+                    var lastError: Exception? = null
+                    var formatStats = mutableMapOf<String, Int>() // Track format counts
                     
-                    try {
-                        // Try the first audio source type
-                        val firstSource = getNextAudioSource()
-                        return tryAudioSource(firstSource, videoId)
-                    } catch (e: Exception) {
-                        // Handle the error with retry logic
-                        return handleStreamError(e, "Multi-Format Stream", videoId)
+                    // Try to get multiple format streams with enhanced attempts
+                    for (attempt in 1..6) {
+                        try {
+                            println("DEBUG: Multi-format attempt $attempt of 6")
+                            
+                            // Vary parameters based on attempt number
+                            val useDifferentParams = attempt % 2 == 0
+                            val resetVisitor = attempt > 3 // Reset visitor ID after 3 attempts
+                            
+                            if (resetVisitor) {
+                                println("DEBUG: Resetting visitor ID on multi-format attempt $attempt")
+                                api.visitor_id = null
+                                ensureVisitorId()
+                            }
+                            
+                            val (video, _) = videoEndpoint.getVideo(useDifferentParams, videoId)
+                            val baseTimestamp = System.currentTimeMillis()
+                            val futureTimestamp = baseTimestamp + (4 * 60 * 60 * 1000) // +4 hours
+                            val random = java.util.Random().nextInt(1000000) + attempt
+                            val sessionId = "session_${System.currentTimeMillis()}_${attempt}"
+                            
+                            // 1. Try to get HLS stream (highest priority for video)
+                            video.streamingData.hlsManifestUrl?.let { hlsUrl ->
+                                val hlsFreshUrl = if (hlsUrl.contains("?")) {
+                                    "$hlsUrl&cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=${attempt}_hls"
+                                } else {
+                                    "$hlsUrl?cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=${attempt}_hls"
+                                }
+                                
+                                println("DEBUG: Added HLS stream on attempt $attempt")
+                                
+                                // Add primary HLS URL
+                                allSources.add(
+                                    Streamable.Source.Http(
+                                        hlsFreshUrl.toRequest(),
+                                        quality = 500000 + attempt // HLS gets third priority (500000+)
+                                    )
+                                )
+                                
+                                // Create backup HLS URLs with different timestamps
+                                val backup1Timestamp = baseTimestamp + (1 * 60 * 60 * 1000) // +1 hour
+                                val backup1Url = if (hlsUrl.contains("?")) {
+                                    "$hlsUrl&cachebuster=$backup1Timestamp&future=$futureTimestamp&rand=${random + 1000}&session=${sessionId}_backup1&attempt=${attempt}_hls_backup1"
+                                } else {
+                                    "$hlsUrl?cachebuster=$backup1Timestamp&future=$futureTimestamp&rand=${random + 1000}&session=${sessionId}_backup1&attempt=${attempt}_hls_backup1"
+                                }
+                                allSources.add(
+                                    Streamable.Source.Http(
+                                        backup1Url.toRequest(),
+                                        quality = 500000 + attempt - 1 // Slightly lower priority
+                                    )
+                                )
+                                
+                                // Create backup HLS URL 2 with +2 hours
+                                val backup2Timestamp = baseTimestamp + (2 * 60 * 60 * 1000) // +2 hours
+                                val backup2Url = if (hlsUrl.contains("?")) {
+                                    "$hlsUrl&cachebuster=$backup2Timestamp&future=$futureTimestamp&rand=${random + 2000}&session=${sessionId}_backup2&attempt=${attempt}_hls_backup2"
+                                } else {
+                                    "$hlsUrl?cachebuster=$backup2Timestamp&future=$futureTimestamp&rand=${random + 2000}&session=${sessionId}_backup2&attempt=${attempt}_hls_backup2"
+                                }
+                                allSources.add(
+                                    Streamable.Source.Http(
+                                        backup2Url.toRequest(),
+                                        quality = 500000 + attempt - 2 // Even lower priority
+                                    )
+                                )
+                                
+                                formatStats["HLS"] = (formatStats["HLS"] ?: 0) + 1
+                            }
+                            
+                            // 2. Process all adaptive formats for maximum compatibility
+                            video.streamingData.adaptiveFormats.forEach { format ->
+                                val mimeType = format.mimeType.lowercase()
+                                val originalUrl = format.url ?: return@forEach
+                                
+                                // Skip video-only streams (no audio) - we only want audio or combined streams
+                                if (mimeType.contains("video/") && !mimeType.contains("audio")) {
+                                    println("DEBUG: Skipping video-only stream: $mimeType")
+                                    return@forEach
+                                }
+                                
+                                // Generate unique parameters for each format
+                                val formatType = when {
+                                    mimeType.contains("video/mp4") && mimeType.contains("audio") -> "mp4_combined" // Combined audio+video
+                                    mimeType.contains("video/webm") && mimeType.contains("audio") -> "webm_combined" // Combined audio+video
+                                    mimeType.contains("audio/mp4") -> "mp4audio"
+                                    mimeType.contains("audio/webm") -> "webmaudio"
+                                    mimeType.contains("audio/mp3") || mimeType.contains("audio/mpeg") -> "mp3"
+                                    else -> "other"
+                                }
+                                
+                                val qualityValue = when {
+                                    // Audio formats get highest priority (add 1000000 bonus)
+                                    mimeType.contains("audio/") -> {
+                                        val baseQuality = when {
+                                            format.audioSampleRate != null -> {
+                                                (format.audioSampleRate!!.toInt() + (format.bitrate / 1000)).toInt()
+                                            }
+                                            else -> format.bitrate.toInt()
+                                        }
+                                        baseQuality + 1000000 // Audio bonus
+                                    }
+                                    // Combined video+audio formats get second priority (add 750000 bonus)
+                                    mimeType.contains("video") && mimeType.contains("audio") -> {
+                                        val baseQuality = when {
+                                            format.height != null && format.width != null -> {
+                                                ((format.height!! * 1000) + (format.bitrate / 1000)).toInt()
+                                            }
+                                            else -> format.bitrate.toInt()
+                                        }
+                                        baseQuality + 750000 // Combined audio+video bonus
+                                    }
+                                    // HLS (combined video+audio) gets third priority (add 500000 bonus)
+                                    mimeType.contains("application/x-mpegurl") -> {
+                                        500000 + (format.bitrate.toInt())
+                                    }
+                                    // Fallback - use bitrate
+                                    else -> format.bitrate.toInt()
+                                }
+                                
+                                val freshUrl = if (originalUrl.contains("?")) {
+                                    "$originalUrl&cachebuster=$baseTimestamp&future=$futureTimestamp&rand=${random + formatType.hashCode()}&session=$sessionId&attempt=${attempt}_${formatType}"
+                                } else {
+                                    "$originalUrl?cachebuster=$baseTimestamp&future=$futureTimestamp&rand=${random + formatType.hashCode()}&session=$sessionId&attempt=${attempt}_${formatType}"
+                                }
+                                
+                                println("DEBUG: Added $formatType stream (quality: $qualityValue, mimeType: ${format.mimeType}) on attempt $attempt")
+                                
+                                // Create multiple backup URLs for each stream with different timestamps
+                                val primaryUrl = freshUrl
+                                
+                                // Add primary URL
+                                allSources.add(
+                                    Streamable.Source.Http(
+                                        primaryUrl.toRequest(),
+                                        quality = qualityValue
+                                    )
+                                )
+                                
+                                // Create backup URLs with different timestamps for failover
+                                val backup1Timestamp = baseTimestamp + (1 * 60 * 60 * 1000) // +1 hour
+                                val backup1Url = if (originalUrl.contains("?")) {
+                                    "$originalUrl&cachebuster=$backup1Timestamp&future=$futureTimestamp&rand=${random + 1000}&session=${sessionId}_backup1&attempt=${attempt}_${formatType}_backup1"
+                                } else {
+                                    "$originalUrl?cachebuster=$backup1Timestamp&future=$futureTimestamp&rand=${random + 1000}&session=${sessionId}_backup1&attempt=${attempt}_${formatType}_backup1"
+                                }
+                                allSources.add(
+                                    Streamable.Source.Http(
+                                        backup1Url.toRequest(),
+                                        quality = qualityValue - 1 // Slightly lower priority
+                                    )
+                                )
+                                
+                                // Create backup URL 2 with +2 hours
+                                val backup2Timestamp = baseTimestamp + (2 * 60 * 60 * 1000) // +2 hours
+                                val backup2Url = if (originalUrl.contains("?")) {
+                                    "$originalUrl&cachebuster=$backup2Timestamp&future=$futureTimestamp&rand=${random + 2000}&session=${sessionId}_backup2&attempt=${attempt}_${formatType}_backup2"
+                                } else {
+                                    "$originalUrl?cachebuster=$backup2Timestamp&future=$futureTimestamp&rand=${random + 2000}&session=${sessionId}_backup2&attempt=${attempt}_${formatType}_backup2"
+                                }
+                                allSources.add(
+                                    Streamable.Source.Http(
+                                        backup2Url.toRequest(),
+                                        quality = qualityValue - 2 // Even lower priority
+                                    )
+                                )
+                                formatStats[formatType.uppercase()] = (formatStats[formatType.uppercase()] ?: 0) + 1
+                            }
+                            
+                            // 3. If we got streams, sort by quality and return
+                            if (allSources.isNotEmpty()) {
+                                // Sort sources by quality (descending) for optimal playback
+                                allSources.sortByDescending { it.quality }
+                                
+                                println("DEBUG: Multi-format attempt $attempt succeeded with ${allSources.size} sources (including backups)")
+                                println("DEBUG: Format breakdown: $formatStats")
+                                println("DEBUG: Stream priorities (top 5):")
+                                allSources.take(5).forEachIndexed { index, source ->
+                                    println("DEBUG:   ${index + 1}. Quality: ${source.quality}")
+                                }
+                                println("DEBUG: System will try sources in order and automatically failover if one fails")
+                                
+                                return Streamable.Media.Server(allSources, false)
+                            }
+                            
+                        } catch (e: Exception) {
+                            lastError = e
+                            println("DEBUG: Multi-format attempt $attempt failed: ${e.message}")
+                            
+                            // Small randomized delay between attempts
+                            if (attempt < 6) {
+                                val delayTime = 200L + java.util.Random().nextInt(100)
+                                kotlinx.coroutines.delay(delayTime)
+                            }
+                        }
                     }
+                    
+                    // If all attempts failed, throw the last error
+                    throw lastError ?: Exception("All multi-format attempts failed")
                 }
                 
                 "VIDEO_M3U8" -> {
-                    // Legacy HLS support - kept for compatibility with error handling
-                    println("DEBUG: Loading HLS stream for videoId: ${streamable.extras["videoId"]}")
+                    // Legacy HLS support - kept for compatibility
+                    // Ensure visitor ID is initialized
+                    ensureVisitorId()
                     
-                    // Reset retry state for new stream request
-                    resetRetryState()
+                    println("DEBUG: Refreshing HLS URL for videoId: ${streamable.extras["videoId"]}")
                     
-                    val videoId = streamable.extras["videoId"]!!
-                    
-                    try {
-                        return loadHlsStream(videoId)
-                    } catch (e: Exception) {
-                        // Handle the error with retry logic
-                        return handleStreamError(e, "HLS Stream", videoId)
+                    // Enhanced retry mechanism with more attempts
+                    var lastError: Exception? = null
+                    for (attempt in 1..8) { // Try up to 8 times
+                        try {
+                            println("DEBUG: HLS Attempt $attempt of 8")
+                            
+                            // Vary parameters based on attempt number
+                            val useDifferentParams = attempt % 2 == 0
+                            val resetVisitor = attempt > 4 // Reset visitor ID after 4 attempts
+                            
+                            if (resetVisitor) {
+                                println("DEBUG: Resetting visitor ID on attempt $attempt")
+                                api.visitor_id = null
+                                ensureVisitorId()
+                            }
+                            
+                            val (video, _) = videoEndpoint.getVideo(useDifferentParams, streamable.extras["videoId"]!!)
+                            val hlsManifestUrl = video.streamingData.hlsManifestUrl!!
+                            
+                            println("DEBUG: Got HLS URL on attempt $attempt: $hlsManifestUrl")
+                            
+                            // Add future-dated cache-busting parameters for longer lifespan
+                            val baseTimestamp = System.currentTimeMillis()
+                            val futureTimestamp = baseTimestamp + (4 * 60 * 60 * 1000) // +4 hours to extend lifespan
+                            val random = java.util.Random().nextInt(1000000) + attempt
+                            val sessionId = "session_${System.currentTimeMillis()}_${attempt}"
+                            val freshUrl = if (hlsManifestUrl.contains("?")) {
+                                "$hlsManifestUrl&cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=$attempt"
+                            } else {
+                                "$hlsManifestUrl?cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=$attempt"
+                            }
+                            
+                            println("DEBUG: Final URL on attempt $attempt: $freshUrl")
+                            
+                            // Create multiple backup URLs with different timestamps for mid-stream failure recovery
+                            val backupUrls = mutableListOf<Streamable.Source.Http>()
+                            
+                            // Primary URL (current timestamp)
+                            backupUrls.add(
+                                Streamable.Source.Http(
+                                    freshUrl.toRequest(),
+                                    quality = 0
+                                )
+                            )
+                            
+                            // Backup URL 1 (+1 hour)
+                            val backup1Timestamp = baseTimestamp + (1 * 60 * 60 * 1000)
+                            val backup1Url = if (hlsManifestUrl.contains("?")) {
+                                "$hlsManifestUrl&cachebuster=$backup1Timestamp&future=$futureTimestamp&rand=${random + 1}&session=$sessionId&attempt=${attempt}_backup1"
+                            } else {
+                                "$hlsManifestUrl?cachebuster=$backup1Timestamp&future=$futureTimestamp&rand=${random + 1}&session=$sessionId&attempt=${attempt}_backup1"
+                            }
+                            backupUrls.add(
+                                Streamable.Source.Http(
+                                    backup1Url.toRequest(),
+                                    quality = 1
+                                )
+                            )
+                            
+                            // Backup URL 2 (+2 hours)
+                            val backup2Timestamp = baseTimestamp + (2 * 60 * 60 * 1000)
+                            val backup2Url = if (hlsManifestUrl.contains("?")) {
+                                "$hlsManifestUrl&cachebuster=$backup2Timestamp&future=$futureTimestamp&rand=${random + 2}&session=$sessionId&attempt=${attempt}_backup2"
+                            } else {
+                                "$hlsManifestUrl?cachebuster=$backup2Timestamp&future=$futureTimestamp&rand=${random + 2}&session=$sessionId&attempt=${attempt}_backup2"
+                            }
+                            backupUrls.add(
+                                Streamable.Source.Http(
+                                    backup2Url.toRequest(),
+                                    quality = 2
+                                )
+                            )
+                            
+                            // Use toServerMedia converter with multiple sources
+                            return Streamable.Media.Server(backupUrls, true)
+                            
+                        } catch (e: Exception) {
+                            lastError = e
+                            println("DEBUG: HLS Attempt $attempt failed: ${e.message}")
+                            
+                            // Small randomized delay between attempts to avoid rate limiting
+                            if (attempt < 8) {
+                                val delayTime = 200L + java.util.Random().nextInt(100) // 200-300ms random delay
+                                kotlinx.coroutines.delay(delayTime)
+                            }
+                        }
                     }
+                    
+                    // All attempts failed, throw the last error
+                    throw lastError ?: Exception("All HLS attempts failed")
                 }
                 
                 "AUDIO_MP3" -> {
-                    // Audio MP3 support with enhanced error handling
-                    println("DEBUG: Loading audio MP3 stream for videoId: ${streamable.extras["videoId"]}")
+                    // Ensure visitor ID is initialized
+                    ensureVisitorId()
                     
-                    // Reset retry state for new stream request
-                    resetRetryState()
+                    println("DEBUG: Refreshing audio URLs for videoId: ${streamable.extras["videoId"]}")
                     
-                    val videoId = streamable.extras["videoId"]!!
-                    
-                    try {
-                        return loadAudioOnlyStream(videoId, "mp3")
-                    } catch (e: Exception) {
-                        // Handle the error with retry logic
-                        return handleStreamError(e, "Audio MP3", videoId)
+                    // Enhanced retry mechanism with more attempts
+                    var lastError: Exception? = null
+                    for (attempt in 1..8) { // Try up to 8 times
+                        try {
+                            println("DEBUG: Audio Attempt $attempt of 8")
+                            
+                            // Vary parameters based on attempt number
+                            val useDifferentParams = attempt % 2 == 0
+                            val resetVisitor = attempt > 4 // Reset visitor ID after 4 attempts
+                            
+                            if (resetVisitor) {
+                                println("DEBUG: Resetting visitor ID on attempt $attempt")
+                                api.visitor_id = null
+                                ensureVisitorId()
+                            }
+                            
+                            val (video, _) = videoEndpoint.getVideo(useDifferentParams, streamable.extras["videoId"]!!)
+                            val audioFiles = video.streamingData.adaptiveFormats.mapNotNull {
+                                if (!it.mimeType.contains("audio")) return@mapNotNull null
+                                val originalUrl = it.url!!
+                                
+                                // Add future-dated cache-busting parameters for longer lifespan
+                                val baseTimestamp = System.currentTimeMillis()
+                                val futureTimestamp = baseTimestamp + (4 * 60 * 60 * 1000) // +4 hours to extend lifespan
+                                val random = java.util.Random().nextInt(1000000) + attempt
+                                val sessionId = "session_${System.currentTimeMillis()}_${attempt}"
+                                val freshUrl = if (originalUrl.contains("?")) {
+                                    "$originalUrl&cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=$attempt"
+                                } else {
+                                    "$originalUrl?cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&attempt=$attempt"
+                                }
+                                
+                                println("DEBUG: Audio URL ${it.audioSampleRate}Hz on attempt $attempt: $freshUrl")
+                                
+                                it.audioSampleRate.toString() to freshUrl
+                            }.toMap()
+                            
+                            println("DEBUG: Audio attempt $attempt total formats: ${audioFiles.size}")
+                            
+                            if (audioFiles.isNotEmpty()) {
+                                // Create enhanced audio sources with backup URLs for each quality
+                                val enhancedAudioSources = mutableListOf<Streamable.Source.Http>()
+                                
+                                audioFiles.forEach { (quality, primaryUrl) ->
+                                    // Primary URL
+                                    enhancedAudioSources.add(
+                                        Streamable.Source.Http(
+                                            primaryUrl.toRequest(),
+                                            quality = quality.toIntOrNull() ?: 0
+                                        )
+                                    )
+                                    
+                                    // Create backup URLs with different timestamps for this quality
+                                    val baseTimestamp = System.currentTimeMillis()
+                                    val futureTimestamp = baseTimestamp + (4 * 60 * 60 * 1000)
+                                    val random = java.util.Random().nextInt(1000000) + attempt
+                                    val sessionId = "session_${System.currentTimeMillis()}_${attempt}"
+                                    
+                                    // Extract original URL without parameters
+                                    val originalUrl = audioFiles.entries.firstOrNull { it.value == primaryUrl }?.key?.let { sampleRate ->
+                                        video.streamingData.adaptiveFormats.find { it.audioSampleRate.toString() == sampleRate }?.url
+                                    } ?: primaryUrl.split("?")[0]
+                                    
+                                    // Backup URL 1 (+1 hour)
+                                    val backup1Timestamp = baseTimestamp + (1 * 60 * 60 * 1000)
+                                    val backup1Url = if (originalUrl.contains("?")) {
+                                        "$originalUrl&cachebuster=$backup1Timestamp&future=$futureTimestamp&rand=${random + 1}&session=$sessionId&attempt=${attempt}_backup1"
+                                    } else {
+                                        "$originalUrl?cachebuster=$backup1Timestamp&future=$futureTimestamp&rand=${random + 1}&session=$sessionId&attempt=${attempt}_backup1"
+                                    }
+                                    enhancedAudioSources.add(
+                                        Streamable.Source.Http(
+                                            backup1Url.toRequest(),
+                                            quality = quality.toIntOrNull()?.plus(1000) ?: 1000 // Higher quality number for backup
+                                        )
+                                    )
+                                    
+                                    // Backup URL 2 (+2 hours)
+                                    val backup2Timestamp = baseTimestamp + (2 * 60 * 60 * 1000)
+                                    val backup2Url = if (originalUrl.contains("?")) {
+                                        "$originalUrl&cachebuster=$backup2Timestamp&future=$futureTimestamp&rand=${random + 2}&session=$sessionId&attempt=${attempt}_backup2"
+                                    } else {
+                                        "$originalUrl?cachebuster=$backup2Timestamp&future=$futureTimestamp&rand=${random + 2}&session=$sessionId&attempt=${attempt}_backup2"
+                                    }
+                                    enhancedAudioSources.add(
+                                        Streamable.Source.Http(
+                                            backup2Url.toRequest(),
+                                            quality = quality.toIntOrNull()?.plus(2000) ?: 2000 // Even higher for second backup
+                                        )
+                                    )
+                                }
+                                
+                                println("DEBUG: Created ${enhancedAudioSources.size} audio sources (primary + backups)")
+                                return Streamable.Media.Server(enhancedAudioSources, false)
+                            } else {
+                                throw Exception("No audio formats found on attempt $attempt")
+                            }
+                            
+                        } catch (e: Exception) {
+                            lastError = e
+                            println("DEBUG: Audio Attempt $attempt failed: ${e.message}")
+                            
+                            // Small randomized delay between attempts to avoid rate limiting
+                            if (attempt < 8) {
+                                val delayTime = 200L + java.util.Random().nextInt(100) // 200-300ms random delay
+                                kotlinx.coroutines.delay(delayTime)
+                            }
+                        }
                     }
+                    
+                    // All attempts failed, throw the last error
+                    throw lastError ?: Exception("All audio attempts failed")
                 }
                 
                 else -> throw IllegalArgumentException("Unknown server streamable ID: ${streamable.id}")
