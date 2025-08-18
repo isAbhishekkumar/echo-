@@ -236,12 +236,43 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                                 
                                 println("DEBUG: Added HLS stream on attempt $attempt")
+                                
+                                // Add primary HLS URL
                                 allSources.add(
                                     Streamable.Source.Http(
                                         hlsFreshUrl.toRequest(),
-                                        quality = 500000 + attempt // HLS gets second priority (500000+)
+                                        quality = 500000 + attempt // HLS gets third priority (500000+)
                                     )
                                 )
+                                
+                                // Create backup HLS URLs with different timestamps
+                                val backup1Timestamp = baseTimestamp + (1 * 60 * 60 * 1000) // +1 hour
+                                val backup1Url = if (hlsUrl.contains("?")) {
+                                    "$hlsUrl&cachebuster=$backup1Timestamp&future=$futureTimestamp&rand=${random + 1000}&session=${sessionId}_backup1&attempt=${attempt}_hls_backup1"
+                                } else {
+                                    "$hlsUrl?cachebuster=$backup1Timestamp&future=$futureTimestamp&rand=${random + 1000}&session=${sessionId}_backup1&attempt=${attempt}_hls_backup1"
+                                }
+                                allSources.add(
+                                    Streamable.Source.Http(
+                                        backup1Url.toRequest(),
+                                        quality = 500000 + attempt - 1 // Slightly lower priority
+                                    )
+                                )
+                                
+                                // Create backup HLS URL 2 with +2 hours
+                                val backup2Timestamp = baseTimestamp + (2 * 60 * 60 * 1000) // +2 hours
+                                val backup2Url = if (hlsUrl.contains("?")) {
+                                    "$hlsUrl&cachebuster=$backup2Timestamp&future=$futureTimestamp&rand=${random + 2000}&session=${sessionId}_backup2&attempt=${attempt}_hls_backup2"
+                                } else {
+                                    "$hlsUrl?cachebuster=$backup2Timestamp&future=$futureTimestamp&rand=${random + 2000}&session=${sessionId}_backup2&attempt=${attempt}_hls_backup2"
+                                }
+                                allSources.add(
+                                    Streamable.Source.Http(
+                                        backup2Url.toRequest(),
+                                        quality = 500000 + attempt - 2 // Even lower priority
+                                    )
+                                )
+                                
                                 formatStats["HLS"] = (formatStats["HLS"] ?: 0) + 1
                             }
                             
@@ -250,12 +281,16 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 val mimeType = format.mimeType.lowercase()
                                 val originalUrl = format.url ?: return@forEach
                                 
+                                // Skip video-only streams (no audio) - we only want audio or combined streams
+                                if (mimeType.contains("video/") && !mimeType.contains("audio")) {
+                                    println("DEBUG: Skipping video-only stream: $mimeType")
+                                    return@forEach
+                                }
+                                
                                 // Generate unique parameters for each format
                                 val formatType = when {
                                     mimeType.contains("video/mp4") && mimeType.contains("audio") -> "mp4_combined" // Combined audio+video
                                     mimeType.contains("video/webm") && mimeType.contains("audio") -> "webm_combined" // Combined audio+video
-                                    mimeType.contains("video/mp4") -> "mp4_video" // Video-only
-                                    mimeType.contains("video/webm") -> "webm_video" // Video-only
                                     mimeType.contains("audio/mp4") -> "mp4audio"
                                     mimeType.contains("audio/webm") -> "webmaudio"
                                     mimeType.contains("audio/mp3") || mimeType.contains("audio/mpeg") -> "mp3"
@@ -287,10 +322,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     mimeType.contains("application/x-mpegurl") -> {
                                         500000 + (format.bitrate.toInt())
                                     }
-                                    // Video-only formats get lowest priority (no bonus)
-                                    format.height != null && format.width != null -> {
-                                        ((format.height!! * 1000) + (format.bitrate / 1000)).toInt()
-                                    }
                                     // Fallback - use bitrate
                                     else -> format.bitrate.toInt()
                                 }
@@ -302,10 +333,43 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                                 
                                 println("DEBUG: Added $formatType stream (quality: $qualityValue, mimeType: ${format.mimeType}) on attempt $attempt")
+                                
+                                // Create multiple backup URLs for each stream with different timestamps
+                                val primaryUrl = freshUrl
+                                
+                                // Add primary URL
                                 allSources.add(
                                     Streamable.Source.Http(
-                                        freshUrl.toRequest(),
+                                        primaryUrl.toRequest(),
                                         quality = qualityValue
+                                    )
+                                )
+                                
+                                // Create backup URLs with different timestamps for failover
+                                val backup1Timestamp = baseTimestamp + (1 * 60 * 60 * 1000) // +1 hour
+                                val backup1Url = if (originalUrl.contains("?")) {
+                                    "$originalUrl&cachebuster=$backup1Timestamp&future=$futureTimestamp&rand=${random + 1000}&session=${sessionId}_backup1&attempt=${attempt}_${formatType}_backup1"
+                                } else {
+                                    "$originalUrl?cachebuster=$backup1Timestamp&future=$futureTimestamp&rand=${random + 1000}&session=${sessionId}_backup1&attempt=${attempt}_${formatType}_backup1"
+                                }
+                                allSources.add(
+                                    Streamable.Source.Http(
+                                        backup1Url.toRequest(),
+                                        quality = qualityValue - 1 // Slightly lower priority
+                                    )
+                                )
+                                
+                                // Create backup URL 2 with +2 hours
+                                val backup2Timestamp = baseTimestamp + (2 * 60 * 60 * 1000) // +2 hours
+                                val backup2Url = if (originalUrl.contains("?")) {
+                                    "$originalUrl&cachebuster=$backup2Timestamp&future=$futureTimestamp&rand=${random + 2000}&session=${sessionId}_backup2&attempt=${attempt}_${formatType}_backup2"
+                                } else {
+                                    "$originalUrl?cachebuster=$backup2Timestamp&future=$futureTimestamp&rand=${random + 2000}&session=${sessionId}_backup2&attempt=${attempt}_${formatType}_backup2"
+                                }
+                                allSources.add(
+                                    Streamable.Source.Http(
+                                        backup2Url.toRequest(),
+                                        quality = qualityValue - 2 // Even lower priority
                                     )
                                 )
                                 formatStats[formatType.uppercase()] = (formatStats[formatType.uppercase()] ?: 0) + 1
@@ -316,12 +380,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 // Sort sources by quality (descending) for optimal playback
                                 allSources.sortByDescending { it.quality }
                                 
-                                println("DEBUG: Multi-format attempt $attempt succeeded with ${allSources.size} sources")
+                                println("DEBUG: Multi-format attempt $attempt succeeded with ${allSources.size} sources (including backups)")
                                 println("DEBUG: Format breakdown: $formatStats")
                                 println("DEBUG: Stream priorities (top 5):")
                                 allSources.take(5).forEachIndexed { index, source ->
                                     println("DEBUG:   ${index + 1}. Quality: ${source.quality}")
                                 }
+                                println("DEBUG: System will try sources in order and automatically failover if one fails")
                                 
                                 return Streamable.Media.Server(allSources, false)
                             }
@@ -605,7 +670,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 Streamable.server(
                     "DUAL_STREAM",
                     0,
-                    "Multi-Format Stream (HLS + MP3 + MP4 + WebM)",
+                    "Audio & Combined Stream (HLS + MP3 + MP4+Audio + WebM+Audio)",
                     mapOf("videoId" to track.id)
                 ).takeIf { !isMusic && (showVideos || audioFiles.isNotEmpty()) },
                 Streamable.server(
