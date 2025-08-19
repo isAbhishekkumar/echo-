@@ -717,7 +717,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 println("DEBUG: Found MPD stream URL: $mpdUrl")
                                 // Use MPD stream for mobile app format
                                 val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType)
-                                lastError = null
                                 return mpdMedia
                             }
                             
@@ -775,34 +774,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                             }
                             
-                            // Return the result and break out of retry loop
-                            lastError = null
                             return resultMedia
-                            
-                        } catch (e: Exception) {
-                            lastError = e
-                            println("DEBUG: Audio attempt $attempt failed with strategy ${getStrategyForNetwork(attempt, networkType)}: ${e.message}")
-                            
-                            // Adaptive delay between attempts to avoid rate limiting - match YouTube behavior
-                            if (attempt < 5) {
-                                val delayTime = when (attempt) {
-                                    1 -> 500L  // First failure: 500ms
-                                    2 -> 1000L // Second failure: 1s
-                                    3 -> 2000L // Third failure: 2s
-                                    4 -> 3000L // Fourth failure: 3s
-                                    else -> 500L
-                                }
-                                println("DEBUG: Waiting ${delayTime}ms before next attempt")
-                                kotlinx.coroutines.delay(delayTime)
-                            }
-                        }
-                    }
-                    
-                    // If all attempts failed, throw the last error with network info
-                    val errorMsg = "All audio attempts failed on $networkType. This might be due to network restrictions. Last error: ${lastError?.message}"
-                    println("DEBUG: $errorMsg")
-                    throw Exception(errorMsg)
-                }
                 
                 "VIDEO_MP4", "VIDEO_WEBM" -> {
                     // Video streaming support with separate audio/video handling
@@ -816,7 +788,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     ensureVisitorId()
                     
                     val videoId = streamable.extras["videoId"]!!
-                    var lastError: Exception? = null
                     
                     // Detect network type to apply appropriate strategies
                     val networkType = detectNetworkType()
@@ -872,7 +843,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             if (mpdUrl != null) {
                                 println("DEBUG: Found MPD stream URL for video: $mpdUrl")
                                 val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType)
-                                lastError = null
                                 return mpdMedia
                             }
                             
@@ -984,37 +954,14 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                             }
                             
-                            // Return the result and break out of retry loop
-                            lastError = null
                             return resultMedia
-                            
-                        } catch (e: Exception) {
-                            lastError = e
-                            println("DEBUG: Video attempt $attempt failed with strategy ${getStrategyForNetwork(attempt, networkType)}: ${e.message}")
-                            
-                            if (attempt < 5) {
-                                val delayTime = when (attempt) {
-                                    1 -> 500L
-                                    2 -> 1000L
-                                    3 -> 2000L
-                                    4 -> 3000L
-                                    else -> 1000L
-                                }
-                                kotlinx.coroutines.delay(delayTime)
-                            }
                         }
                     }
-                    
-                    // If all attempts failed, throw the last error
-                    val errorMsg = "All video attempts failed on $networkType. Last error: ${lastError?.message}"
-                    println("DEBUG: $errorMsg")
-                    throw Exception(errorMsg)
                 }
                 
                 else -> throw IllegalArgumentException("Unknown server streamable ID: ${streamable.id}")
             }
             
-            // Add other MediaType cases to make when exhaustive
             Streamable.MediaType.Background -> throw IllegalArgumentException("Background media type not supported")
             Streamable.MediaType.Subtitle -> throw IllegalArgumentException("Subtitle media type not supported")
         }
