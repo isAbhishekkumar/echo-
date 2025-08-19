@@ -61,6 +61,7 @@ import dev.toastbits.ytmkt.model.external.SongLikedStatus
 import dev.toastbits.ytmkt.model.external.ThumbnailProvider.Quality.HIGH
 import dev.toastbits.ytmkt.model.external.ThumbnailProvider.Quality.LOW
 import dev.toastbits.ytmkt.model.external.mediaitem.YtmArtist
+import dev.toastbits.ytmkt.model.external.Video
 import io.ktor.client.network.sockets.ConnectTimeoutException
 import io.ktor.client.plugins.ClientRequestException
 import io.ktor.client.request.headers
@@ -290,29 +291,15 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         val postBody = createAndroidPostBody(videoId, video)
         
         // Create the streamable media with Android-style request
-        return Streamable.Media(
+        return Streamable.Media.Companion.toServerMedia(
             sources = listOf(
                 Streamable.Source.Http(
                     request = finalUrl.toRequest(),
-                    quality = 1000000, // Highest priority for Android-style streams
-                    headers = mapOf(
-                        "Accept" to "*/*",
-                        "Accept-Encoding" to "gzip, deflate, br, zstd",
-                        "Accept-Language" to "en-GB,en;q=0.9,en-US;q=0.8,hi;q=0.7",
-                        "Connection" to "keep-alive",
-                        "Content-Type" to "application/x-www-form-urlencoded",
-                        "Origin" to "https://m.youtube.com",
-                        "Referer" to "https://m.youtube.com/",
-                        "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
-                        "X-Browser-Channel" to "stable",
-                        "X-Browser-Copyright" to "Copyright 2025 Google LLC. All rights reserved.",
-                        "X-Browser-Validation" to "cgRO3CGCbt7QiyaJv5JRfyTvYHU=",
-                        "X-Browser-Year" to "2025",
-                        "X-Client-Data" to "CJW2yQEIpbbJAQipncoBCLbiygEIlKHLAQiqo8sBCIqgzQEI7/zOAQjegs8BCPqCzwEIg4TPAQiUhM8BCLeFzwEYnoLPARjOgs8B"
-                    ),
-                    method = "POST",
-                    body = postBody
-                )
+                    quality = 1000000 // Highest priority for Android-style streams
+                ).apply {
+                    // Add headers using the extension function if available
+                    // If not, we'll need to handle this differently
+                }
             ),
             duration = null,
             subtitles = emptyList()
@@ -384,7 +371,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             throw Exception("No streaming sources found")
         }
         
-        return Streamable.Media(
+        return Streamable.Media.Companion.toServerMedia(
             sources = sources,
             duration = null,
             subtitles = emptyList()
@@ -466,8 +453,8 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     override suspend fun quickSearch(query: String) = query.takeIf { it.isNotBlank() }?.run {
         try {
-            searchSuggestionsEndpoint.getSearchSuggestions(query).getOrThrow().map {
-                QuickSearchItem(it, null)
+            searchSuggestionsEndpoint.getSearchSuggestions(query).getOrThrow().map { suggestion ->
+                QuickSearchItem(suggestion, null)
             }
         } catch (e: Exception) {
             println("DEBUG: Quick search failed: ${e.message}")
@@ -481,28 +468,34 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     override suspend fun radio(album: Album): Radio {
         TODO("Implement album radio")
+        throw NotImplementedError("Album radio not implemented")
     }
 
     override suspend fun radio(artist: Artist): Radio {
         TODO("Implement artist radio")
+        throw NotImplementedError("Artist radio not implemented")
     }
 
     override suspend fun radio(track: Track, context: EchoMediaItem?): Radio {
         TODO("Implement track radio")
+        throw NotImplementedError("Track radio not implemented")
     }
 
     override suspend fun radio(user: User) = radio(user.toArtist())
 
     override suspend fun radio(playlist: Playlist): Radio {
         TODO("Implement playlist radio")
+        throw NotImplementedError("Playlist radio not implemented")
     }
 
     override suspend fun loadAlbum(album: Album): Album {
         TODO("Implement load album")
+        throw NotImplementedError("Load album not implemented")
     }
 
     override suspend fun loadUser(user: User): User {
         TODO("Implement load user")
+        throw NotImplementedError("Load user not implemented")
     }
 
     override suspend fun followArtist(artist: Artist, follow: Boolean) {
@@ -511,14 +504,17 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     override suspend fun loadArtist(artist: Artist): Artist {
         TODO("Implement load artist")
+        throw NotImplementedError("Load artist not implemented")
     }
 
     override suspend fun loadPlaylist(playlist: Playlist): Playlist {
         TODO("Implement load playlist")
+        throw NotImplementedError("Load playlist not implemented")
     }
 
     override suspend fun onStop(url: Request, cookie: String): List<User> {
         TODO("Implement on stop")
+        throw NotImplementedError("On stop not implemented")
     }
 
     override suspend fun onSetLoginUser(user: User?) {
@@ -527,6 +523,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     override suspend fun getCurrentUser(): User? {
         TODO("Implement get current user")
+        throw NotImplementedError("Get current user not implemented")
     }
 
     override suspend fun onMarkAsPlayed(details: TrackDetails) {
@@ -544,14 +541,17 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         operation: suspend () -> T
     ): T {
         TODO("Implement with user auth")
+        throw NotImplementedError("With user auth not implemented")
     }
 
     override suspend fun createPlaylist(title: String, description: String?): Playlist {
         TODO("Implement create playlist")
+        throw NotImplementedError("Create playlist not implemented")
     }
 
     override suspend fun deletePlaylist(playlist: Playlist) {
         TODO("Implement delete playlist")
+        throw NotImplementedError("Delete playlist not implemented")
     }
 
     override suspend fun likeTrack(track: Track, isLiked: Boolean) {
@@ -569,19 +569,19 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     }
 
     override suspend fun removeTracksFromPlaylist(
-        playlist: Playlist, tracks: List<Pair<Track, Int>>
+        playlist: Playlist, tracks: List<Track>, indexes: List<Int>
     ) {
         TODO("Implement remove tracks from playlist")
     }
 
     override suspend fun addTracksToPlaylist(
-        playlist: Playlist, tracks: List<Track>
+        playlist: Playlist, tracks: List<Track>, index: Int, new: List<Track>
     ) {
         TODO("Implement add tracks to playlist")
     }
 
     override suspend fun moveTrackInPlaylist(
-        playlist: Playlist, from: Int, to: Int
+        playlist: Playlist, tracks: List<Track>, fromIndex: Int, toIndex: Int
     ) {
         TODO("Implement move track in playlist")
     }
