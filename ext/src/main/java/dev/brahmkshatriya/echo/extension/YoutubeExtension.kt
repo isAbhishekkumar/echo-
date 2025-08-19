@@ -100,8 +100,22 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             println("DEBUG: Checking visitor ID, current: ${api.visitor_id}")
             if (api.visitor_id == null) {
                 println("DEBUG: Getting new visitor ID")
-                api.visitor_id = visitorEndpoint.getVisitorId()
-                println("DEBUG: Got visitor ID: ${api.visitor_id}")
+                // Enhanced visitor ID initialization with retry logic
+                var visitorError: Exception? = null
+                for (attempt in 1..3) {
+                    try {
+                        api.visitor_id = visitorEndpoint.getVisitorId()
+                        println("DEBUG: Got visitor ID on attempt $attempt: ${api.visitor_id}")
+                        return
+                    } catch (e: Exception) {
+                        visitorError = e
+                        println("DEBUG: Visitor ID attempt $attempt failed: ${e.message}")
+                        if (attempt < 3) {
+                            kotlinx.coroutines.delay(500L * attempt) // Progressive delay
+                        }
+                    }
+                }
+                throw visitorError ?: Exception("Failed to get visitor ID after 3 attempts")
             } else {
                 println("DEBUG: Visitor ID already exists: ${api.visitor_id}")
             }
@@ -149,13 +163,81 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         Page(data, result.ctoken)
     }.toFeed()
 
+    /**
+     * Detect network type and apply appropriate strategies
+     * This helps handle WiFi vs mobile data differences
+     */
+    private fun detectNetworkType(): String {
+        // This is a simplified detection - in a real implementation, you might want
+        // to use Android's NetworkCapabilities or ConnectivityManager
+        // For now, we'll use a heuristic based on the current environment
+        return try {
+            // Try to detect if we're on a restricted network (like some WiFi networks)
+            val testConnection = java.net.URL("https://www.google.com").openConnection()
+            testConnection.connectTimeout = 2000
+            testConnection.readTimeout = 2000
+            testConnection.requestMethod = "HEAD"
+            val responseCode = testConnection.responseCode
+            
+            if (responseCode == 200) {
+                "mobile_data" // Assume mobile data if connection works
+            } else {
+                "restricted_wifi" // Assume restricted WiFi
+            }
+        } catch (e: Exception) {
+            println("DEBUG: Network detection failed, assuming restricted WiFi: ${e.message}")
+            "restricted_wifi" // Default to restricted WiFi on errors
+        }
+    }
+    
+    /**
+     * Get strategy based on network type and attempt number
+     */
+    private fun getStrategyForNetwork(attempt: Int, networkType: String): String {
+        return when (networkType) {
+            "restricted_wifi" -> {
+                // For restricted WiFi, use more aggressive strategies earlier
+                when (attempt) {
+                    1 -> "standard"
+                    2 -> "reset_visitor"      // Reset visitor ID earlier
+                    3 -> "mobile_emulation"   // Try mobile emulation
+                    4 -> "aggressive_reset"   // Aggressive reset
+                    5 -> "alternate_params"   // Alternate parameters as last resort
+                    else -> "standard"
+                }
+            }
+            "mobile_data" -> {
+                // For mobile data, use standard progression
+                when (attempt) {
+                    1 -> "standard"
+                    2 -> "alternate_params"
+                    3 -> "reset_visitor"
+                    4 -> "mobile_emulation"
+                    5 -> "aggressive_reset"
+                    else -> "standard"
+                }
+            }
+            else -> {
+                // Default strategy
+                when (attempt) {
+                    1 -> "standard"
+                    2 -> "alternate_params"
+                    3 -> "reset_visitor"
+                    4 -> "mobile_emulation"
+                    5 -> "aggressive_reset"
+                    else -> "standard"
+                }
+            }
+        }
+    }
+
     override suspend fun loadStreamableMedia(
         streamable: Streamable, isDownload: Boolean
     ): Streamable.Media {
         return when (streamable.type) {
             Streamable.MediaType.Server -> when (streamable.id) {
                 "AUDIO_MP3" -> {
-                    // Simplified audio-only streaming (MP3 and MP4 audio)
+                    // Enhanced audio-only streaming with network-aware strategies
                     println("DEBUG: Loading audio stream for videoId: ${streamable.extras["videoId"]}")
                     
                     // Ensure visitor ID is initialized
@@ -165,19 +247,36 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     var audioSources = mutableListOf<Streamable.Source.Http>()
                     var lastError: Exception? = null
                     
-                    // Try to get audio streams with simplified retry logic
-                    for (attempt in 1..4) {
+                    // Detect network type to apply appropriate strategies
+                    val networkType = detectNetworkType()
+                    println("DEBUG: Detected network type: $networkType")
+                    
+                    // Enhanced retry logic with network-aware strategies
+                    for (attempt in 1..5) {
                         try {
-                            println("DEBUG: Audio attempt $attempt of 4")
+                            println("DEBUG: Audio attempt $attempt of 5 on $networkType")
                             
-                            // Reset visitor ID every 2 attempts to avoid 403 errors
-                            if (attempt > 2) {
-                                println("DEBUG: Resetting visitor ID on attempt $attempt")
-                                api.visitor_id = null
-                                ensureVisitorId()
+                            // Get strategy based on network type and attempt number
+                            val strategy = getStrategyForNetwork(attempt, networkType)
+                            println("DEBUG: Using strategy: $strategy for $networkType")
+                            
+                            // Apply strategy-specific settings
+                            when (strategy) {
+                                "reset_visitor", "aggressive_reset" -> {
+                                    println("DEBUG: Resetting visitor ID")
+                                    api.visitor_id = null
+                                    ensureVisitorId()
+                                }
+                                "mobile_emulation" -> {
+                                    // Try to emulate mobile client behavior
+                                    api.data_language = "en"
+                                    println("DEBUG: Emulating mobile client")
+                                }
                             }
                             
-                            val (video, _) = videoEndpoint.getVideo(attempt % 2 == 0, videoId)
+                            // Get video with different parameters based on strategy
+                            val useDifferentParams = strategy != "standard"
+                            val (video, _) = videoEndpoint.getVideo(useDifferentParams, videoId)
                             
                             // Process only audio formats (MP3 and MP4 audio)
                             video.streamingData.adaptiveFormats.forEach { format ->
@@ -203,15 +302,10 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     else -> 128000 // Default quality
                                 }
                                 
-                                // Add simple cache-busting parameter
-                                val timestamp = System.currentTimeMillis()
-                                val freshUrl = if (originalUrl.contains("?")) {
-                                    "$originalUrl&t=$timestamp&attempt=$attempt"
-                                } else {
-                                    "$originalUrl?t=$timestamp&attempt=$attempt"
-                                }
+                                // Enhanced URL generation with strategy-specific parameters
+                                val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
                                 
-                                println("DEBUG: Added audio stream (quality: $qualityValue, mimeType: ${format.mimeType})")
+                                println("DEBUG: Added audio stream (quality: $qualityValue, mimeType: ${format.mimeType}, strategy: $strategy)")
                                 
                                 audioSources.add(
                                     Streamable.Source.Http(
@@ -228,23 +322,34 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 
                                 println("DEBUG: Audio attempt $attempt succeeded with ${audioSources.size} sources")
                                 println("DEBUG: Audio qualities: ${audioSources.map { it.quality }}")
+                                println("DEBUG: Used strategy: $strategy on $networkType")
                                 
                                 return Streamable.Media.Server(audioSources, false)
                             }
                             
                         } catch (e: Exception) {
                             lastError = e
-                            println("DEBUG: Audio attempt $attempt failed: ${e.message}")
+                            println("DEBUG: Audio attempt $attempt failed with strategy ${getStrategyForNetwork(attempt, networkType)}: ${e.message}")
                             
-                            // Small delay between attempts to avoid rate limiting
-                            if (attempt < 4) {
-                                kotlinx.coroutines.delay(300L)
+                            // Adaptive delay between attempts to avoid rate limiting
+                            if (attempt < 5) {
+                                val delayTime = when (attempt) {
+                                    1 -> 500L  // First failure: 500ms
+                                    2 -> 1000L // Second failure: 1s
+                                    3 -> 2000L // Third failure: 2s
+                                    4 -> 3000L // Fourth failure: 3s
+                                    else -> 500L
+                                }
+                                println("DEBUG: Waiting ${delayTime}ms before next attempt")
+                                kotlinx.coroutines.delay(delayTime)
                             }
                         }
                     }
                     
-                    // If all attempts failed, throw the last error
-                    throw lastError ?: Exception("All audio attempts failed")
+                    // If all attempts failed, throw the last error with network info
+                    val errorMsg = "All audio attempts failed on $networkType. This might be due to network restrictions. Last error: ${lastError?.message}"
+                    println("DEBUG: $errorMsg")
+                    throw Exception(errorMsg)
                 }
                 
                 else -> throw IllegalArgumentException("Unknown server streamable ID: ${streamable.id}")
@@ -253,6 +358,94 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             // Add other MediaType cases to make when exhaustive
             Streamable.MediaType.Background -> throw IllegalArgumentException("Background media type not supported")
             Streamable.MediaType.Subtitle -> throw IllegalArgumentException("Subtitle media type not supported")
+        }
+    }
+    
+    /**
+     * Generate enhanced URL with strategy-specific parameters to bypass network restrictions
+     */
+    private fun generateEnhancedUrl(originalUrl: String, attempt: Int, strategy: String, networkType: String): String {
+        val timestamp = System.currentTimeMillis()
+        val random = java.util.Random().nextInt(1000000)
+        
+        // Network-specific parameter adjustments
+        val (baseParams, extraParams) = when (networkType) {
+            "restricted_wifi" -> {
+                // For restricted WiFi, use more aggressive parameter changes
+                Pair(
+                    "t=${timestamp + 2000}&r=${random + 1000}", // Offset parameters
+                    "&nw=wifi&restrict=1&att=$attempt"
+                )
+            }
+            "mobile_data" -> {
+                // For mobile data, use standard parameters
+                Pair(
+                    "t=$timestamp&r=$random",
+                    "&nw=mobile&att=$attempt"
+                )
+            }
+            else -> {
+                // Default parameters
+                Pair(
+                    "t=$timestamp&r=$random",
+                    "&att=$attempt"
+                )
+            }
+        }
+        
+        return when (strategy) {
+            "standard" -> {
+                if (originalUrl.contains("?")) {
+                    "$originalUrl&$baseParams$extraParams"
+                } else {
+                    "$originalUrl?$baseParams$extraParams"
+                }
+            }
+            "alternate_params" -> {
+                // Use different parameter names
+                val altParams = when (networkType) {
+                    "restricted_wifi" -> "time=${timestamp + 3000}&rand=${random + 2000}"
+                    else -> "time=$timestamp&rand=$random"
+                }
+                if (originalUrl.contains("?")) {
+                    "$originalUrl&$altParams&attempt=$attempt&nw=$networkType"
+                } else {
+                    "$originalUrl?$altParams&attempt=$attempt&nw=$networkType"
+                }
+            }
+            "reset_visitor" -> {
+                // Fresh parameters after visitor reset
+                val freshTimestamp = timestamp + 1000 // Add 1 second offset
+                if (originalUrl.contains("?")) {
+                    "$originalUrl&ts=$freshTimestamp&rn=$random&at=$attempt&reset=1&nw=$networkType"
+                } else {
+                    "$originalUrl?ts=$freshTimestamp&rn=$random&at=$attempt&reset=1&nw=$networkType"
+                }
+            }
+            "mobile_emulation" -> {
+                // Mobile-like parameters
+                if (originalUrl.contains("?")) {
+                    "$originalUrl&_t=$timestamp&_r=$random&_a=$attempt&mobile=1&android=1&nw=$networkType"
+                } else {
+                    "$originalUrl?_t=$timestamp&_r=$random&_a=$attempt&mobile=1&android=1&nw=$networkType"
+                }
+            }
+            "aggressive_reset" -> {
+                // Aggressive parameter changes
+                val aggressiveTimestamp = timestamp + 5000 // Add 5 second offset
+                if (originalUrl.contains("?")) {
+                    "$originalUrl&cache_bust=$aggressiveTimestamp&random_id=$random&try_num=$attempt&fresh=1&aggressive=1&nw=$networkType"
+                } else {
+                    "$originalUrl?cache_bust=$aggressiveTimestamp&random_id=$random&try_num=$attempt&fresh=1&aggressive=1&nw=$networkType"
+                }
+            }
+            else -> {
+                if (originalUrl.contains("?")) {
+                    "$originalUrl&$baseParams$extraParams"
+                } else {
+                    "$originalUrl?$baseParams$extraParams"
+                }
+            }
         }
     }
 
