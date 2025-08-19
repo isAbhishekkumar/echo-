@@ -256,20 +256,20 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             url
         }
         
+        // Add headers to the request - this depends on how the Request class handles headers
+        // For now, we'll add them as URL parameters to simulate header behavior
+        val headerString = headers.map { (key, value) ->
+            "${key.hashCode()}=${value.hashCode()}"
+        }.joinToString("&")
+        
+        val finalUrl = if (enhancedUrl.contains("?")) {
+            "$enhancedUrl&headers=$headerString"
+        } else {
+            "$enhancedUrl?headers=$headerString"
+        }
+        
         return Streamable.Source.Http(
-            enhancedUrl.toRequest().apply {
-                // Add headers to the request - this depends on how the Request class handles headers
-                // For now, we'll add them as URL parameters to simulate header behavior
-                val headerString = headers.map { (key, value) ->
-                    "${key.hashCode()}=${value.hashCode()}"
-                }.joinToString("&")
-                
-                if (enhancedUrl.contains("?")) {
-                    url = "$enhancedUrl&headers=$headerString"
-                } else {
-                    url = "$enhancedUrl?headers=$headerString"
-                }
-            },
+            finalUrl.toRequest(),
             quality = 0 // Will be set by caller
         )
     }
