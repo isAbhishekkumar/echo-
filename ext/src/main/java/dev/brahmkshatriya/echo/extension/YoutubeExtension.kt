@@ -69,6 +69,7 @@ import io.ktor.http.headers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import java.security.MessageDigest
 
 class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFeedClient,
@@ -106,6 +107,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     private lateinit var settings: Settings
     override fun setSettings(settings: Settings) {
         this.settings = settings
+    }
+
+    private val json = Json { 
+        ignoreUnknownKeys = true 
+        coerceInputValues = true 
     }
 
     val api = YoutubeiApi(
@@ -772,7 +778,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     }
                                 }
                             }
-                            }
                         } catch (e: Exception) {
                             println("DEBUG: Failed to process audio stream: ${e.message}")
                             throw Exception("Audio stream processing failed: ${e.message}")
@@ -955,10 +960,8 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     throw Exception("No valid video sources found")
                                 }
                             }
-                            }
                             
                             return@withNetworkAwareRetry resultMedia
-                        }
                         } catch (e: Exception) {
                             println("DEBUG: Video attempt $attempt failed: ${e.message}")
                             if (attempt < 5) {
@@ -1204,7 +1207,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         }
     }
 
-    override suspend fun loadTrack(track: Track) = coroutineScope {
+    override suspend fun loadTrack(track: Track): Track = coroutineScope {
         // Ensure visitor ID is initialized
         ensureVisitorId()
         
@@ -1258,11 +1261,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     override fun getShelves(track: Track) = PagedData.Single { loadRelated(track) }
 
-    override suspend fun deleteQuickSearch(item: QuickSearchItem) {
+    override suspend fun deleteQuickSearch(item: QuickSearchItem): Unit {
         searchSuggestionsEndpoint.delete(item as QuickSearchItem.Query)
     }
 
-    override suspend fun quickSearch(query: String) = query.takeIf { it.isNotBlank() }?.run {
+    override suspend fun quickSearch(query: String): List<QuickSearchItem> = query.takeIf { it.isNotBlank() }?.run {
         try {
             api.SearchSuggestions.getSearchSuggestions(this).getOrThrow()
                 .map { QuickSearchItem.Query(it.text, it.is_from_history) }
@@ -1359,7 +1362,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         )
     }
 
-    override suspend fun radio(user: User) = radio(user.toArtist())
+    override suspend fun radio(user: User): Radio = radio(user.toArtist())
 
     override suspend fun radio(playlist: Playlist): Radio {
         val track = loadTracks(playlist).loadAll().lastOrNull()
@@ -1422,7 +1425,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         return loadedArtist!!.toUser(HIGH)
     }
 
-    override suspend fun followArtist(artist: Artist, follow: Boolean) {
+    override suspend fun followArtist(artist: Artist, follow: Boolean): Unit {
         val subId = artist.extras["subId"] ?: throw Exception("No subId found")
         withUserAuth { it.SetSubscribedToArtist.setSubscribedToArtist(artist.id, follow, subId) }
     }
@@ -1485,7 +1488,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         }
     }
 
-    override suspend fun onSetLoginUser(user: User?) {
+    override suspend fun onSetLoginUser(user: User?): Unit {
         if (user == null) {
             api.user_auth_state = null
         } else {
@@ -1516,7 +1519,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     override val markAsPlayedDuration = 30000L
 
-    override suspend fun onMarkAsPlayed(details: TrackDetails) {
+    override suspend fun onMarkAsPlayed(details: TrackDetails): Unit {
         api.user_auth_state?.MarkSongAsWatched?.markSongAsWatched(details.track.id)?.getOrThrow()
     }
 
@@ -1564,11 +1567,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         return loadPlaylist(Playlist(playlistId, "", true))
     }
 
-    override suspend fun deletePlaylist(playlist: Playlist) = withUserAuth {
+    override suspend fun deletePlaylist(playlist: Playlist): Unit = withUserAuth {
         it.DeleteAccountPlaylist.deleteAccountPlaylist(playlist.id).getOrThrow()
     }
 
-    override suspend fun likeTrack(track: Track, isLiked: Boolean) {
+    override suspend fun likeTrack(track: Track, isLiked: Boolean): Unit {
         val likeStatus = if (isLiked) SongLikedStatus.LIKED else SongLikedStatus.NEUTRAL
         withUserAuth { it.SetSongLiked.setSongLiked(track.id, likeStatus).getOrThrow() }
     }
@@ -1648,9 +1651,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         listOf(Lyrics(lyricsId, track.title, data.second, Lyrics.Timed(lyrics)))
     }
 
-    override suspend fun loadLyrics(lyrics: Lyrics) = lyrics
+    override suspend fun loadLyrics(lyrics: Lyrics): Lyrics = lyrics
 
-    override suspend fun onShare(item: EchoMediaItem) = when (item) {
+    override suspend fun onShare(item: EchoMediaItem): String = when (item) {
         is EchoMediaItem.Lists.AlbumItem -> "https://music.youtube.com/browse/${item.id}"
         is EchoMediaItem.Lists.PlaylistItem -> "https://music.youtube.com/playlist?list=${item.id}"
         is EchoMediaItem.Lists.RadioItem -> "https://music.youtube.com/playlist?list=${item.id}"
