@@ -154,6 +154,37 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         const val ENGLISH = "en-GB"
         const val SINGLES = "Singles"
         const val SONGS = "songs"
+        
+        // Real mobile device User-Agents based on actual YouTube Music traffic
+        val MOBILE_USER_AGENTS = listOf(
+            "Mozilla/5.0 (Linux; Android 13; vivo 1916) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 12; SM-S906N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36"
+        )
+        
+        // Real desktop User-Agents for fallback
+        val DESKTOP_USER_AGENTS = listOf(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Safari/537.36"
+        )
+        
+        // Real YouTube Music headers based on intercepted traffic
+        val YOUTUBE_MUSIC_HEADERS = mapOf(
+            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept-Language" to "en-US,en;q=0.9",
+            "Cache-Control" to "no-cache",
+            "Pragma" to "no-cache",
+            "Sec-Ch-Ua" to "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+            "Sec-Ch-Ua-Mobile" to "?1",
+            "Sec-Ch-Ua-Platform" to "\"Android\"",
+            "Sec-Fetch-Dest" to "document",
+            "Sec-Fetch-Mode" to "navigate",
+            "Sec-Fetch-Site" to "none",
+            "Sec-Fetch-User" to "?1",
+            "Upgrade-Insecure-Requests" to "1",
+            "User-Agent" to MOBILE_USER_AGENTS[0] // Default to first mobile agent
+        )
     }
 
     override suspend fun getHomeTabs() = listOf<Tab>()
@@ -170,13 +201,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     }.toFeed()
 
     /**
-     * Detect network type and apply appropriate strategies
-     * This helps handle WiFi vs mobile data differences
+     * Enhanced network type detection with additional checks
      */
     private fun detectNetworkType(): String {
-        // This is a simplified detection - in a real implementation, you might want
-        // to use Android's NetworkCapabilities or ConnectivityManager
-        // For now, we'll use a heuristic based on the current environment
         return try {
             // Try to detect if we're on a restricted network (like some WiFi networks)
             val testConnection = java.net.URL("https://www.google.com").openConnection() as java.net.HttpURLConnection
@@ -185,52 +212,110 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             testConnection.requestMethod = "HEAD"
             val responseCode = testConnection.responseCode
             
-            if (responseCode == 200) {
-                "mobile_data" // Assume mobile data if connection works
-            } else {
-                "restricted_wifi" // Assume restricted WiFi
+            // Additional check - try to access YouTube directly
+            val youtubeTest = java.net.URL("https://music.youtube.com").openConnection() as java.net.HttpURLConnection
+            youtubeTest.connectTimeout = 3000
+            youtubeTest.readTimeout = 3000
+            youtubeTest.requestMethod = "HEAD"
+            val youtubeResponse = youtubeTest.responseCode
+            
+            when {
+                responseCode == 200 && youtubeResponse == 200 -> "mobile_data"
+                responseCode == 200 && youtubeResponse != 200 -> "restricted_wifi"
+                else -> "restricted_wifi"
             }
         } catch (e: Exception) {
             println("DEBUG: Network detection failed, assuming restricted WiFi: ${e.message}")
-            "restricted_wifi" // Default to restricted WiFi on errors
+            "restricted_wifi"
         }
     }
     
     /**
-     * Get strategy based on network type and attempt number
+     * Get random User-Agent to simulate different devices
+     */
+    private fun getRandomUserAgent(isMobile: Boolean = true): String {
+        val agents = if (isMobile) MOBILE_USER_AGENTS else DESKTOP_USER_AGENTS
+        return agents.random()
+    }
+    
+    /**
+     * Get enhanced headers for specific strategy
+     */
+    private fun getEnhancedHeaders(strategy: String, attempt: Int): Map<String, String> {
+        val baseHeaders = YOUTUBE_MUSIC_HEADERS.toMutableMap()
+        
+        return when (strategy) {
+            "mobile_emulation" -> {
+                baseHeaders.apply {
+                    put("User-Agent", getRandomUserAgent(true))
+                    put("Sec-Ch-Ua-Mobile", "?1")
+                    put("Sec-Ch-Ua-Platform", "\"Android\"")
+                    // Add some randomization to headers
+                    if (attempt > 2) {
+                        put("Accept-Language", "en-US,en;q=0.8")
+                        put("Cache-Control", "max-age=0")
+                    }
+                }
+            }
+            "desktop_fallback" -> {
+                baseHeaders.apply {
+                    put("User-Agent", getRandomUserAgent(false))
+                    put("Sec-Ch-Ua-Mobile", "?0")
+                    put("Sec-Ch-Ua-Platform", "\"Windows\"")
+                }
+            }
+            "aggressive_mobile" -> {
+                baseHeaders.apply {
+                    put("User-Agent", getRandomUserAgent(true))
+                    put("Accept", "*/*")
+                    put("Accept-Language", "en-US,en;q=0.5")
+                    put("DNT", "1")
+                    put("Connection", "keep-alive")
+                }
+            }
+            else -> {
+                baseHeaders.apply {
+                    put("User-Agent", getRandomUserAgent(true))
+                }
+            }
+        }
+    }
+    
+    /**
+     * Get strategy based on network type and attempt number - Enhanced with more strategies
      */
     private fun getStrategyForNetwork(attempt: Int, networkType: String): String {
         return when (networkType) {
             "restricted_wifi" -> {
                 // For restricted WiFi, use more aggressive strategies earlier
                 when (attempt) {
-                    1 -> "standard"
-                    2 -> "reset_visitor"      // Reset visitor ID earlier
-                    3 -> "mobile_emulation"   // Try mobile emulation
-                    4 -> "aggressive_reset"   // Aggressive reset
-                    5 -> "alternate_params"   // Alternate parameters as last resort
-                    else -> "standard"
+                    1 -> "mobile_emulation"      // Start with mobile emulation
+                    2 -> "aggressive_mobile"      // More aggressive mobile
+                    3 -> "reset_visitor"          // Reset visitor ID
+                    4 -> "desktop_fallback"       // Try desktop as fallback
+                    5 -> "alternate_params"       // Alternate parameters as last resort
+                    else -> "mobile_emulation"
                 }
             }
             "mobile_data" -> {
-                // For mobile data, use standard progression
+                // For mobile data, use standard progression but still mobile-first
                 when (attempt) {
-                    1 -> "standard"
-                    2 -> "alternate_params"
-                    3 -> "reset_visitor"
-                    4 -> "mobile_emulation"
-                    5 -> "aggressive_reset"
-                    else -> "standard"
+                    1 -> "mobile_emulation"       // Mobile emulation first
+                    2 -> "standard"               // Standard method
+                    3 -> "alternate_params"       // Alternate parameters
+                    4 -> "reset_visitor"          // Reset visitor ID
+                    5 -> "desktop_fallback"       // Desktop fallback
+                    else -> "mobile_emulation"
                 }
             }
             else -> {
-                // Default strategy
+                // Default strategy - progressive approach
                 when (attempt) {
                     1 -> "standard"
-                    2 -> "alternate_params"
-                    3 -> "reset_visitor"
-                    4 -> "mobile_emulation"
-                    5 -> "aggressive_reset"
+                    2 -> "mobile_emulation"
+                    3 -> "alternate_params"
+                    4 -> "reset_visitor"
+                    5 -> "aggressive_mobile"
                     else -> "standard"
                 }
             }
@@ -238,7 +323,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     }
 
     /**
-     * Create a POST request with proper headers based on real YouTube Music behavior
+     * Create a POST request with enhanced headers based on real YouTube Music behavior
      */
     private fun createPostRequest(url: String, headers: Map<String, String>, body: String? = null): Streamable.Source.Http {
         // For now, we'll use the URL approach but with enhanced headers
@@ -256,9 +341,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             url
         }
         
+        // Add enhanced headers to the request
+        val finalHeaders = headers.toMutableMap()
+        finalHeaders.putAll(YOUTUBE_MUSIC_HEADERS)
+        
         // Add headers to the request - this depends on how the Request class handles headers
         // For now, we'll add them as URL parameters to simulate header behavior
-        val headerString = headers.map { (key, value) ->
+        val headerString = finalHeaders.map { (key, value) ->
             "${key.hashCode()}=${value.hashCode()}"
         }.joinToString("&")
         
@@ -299,27 +388,37 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         try {
                             println("DEBUG: Audio attempt $attempt of 5 on $networkType")
                             
+                            // Add random delay to mimic human behavior (except for first attempt)
+                            if (attempt > 1) {
+                                val delay = (500L * attempt) + (Math.random() * 1000L).toLong()
+                                println("DEBUG: Adding random delay: ${delay}ms")
+                                kotlinx.coroutines.delay(delay)
+                            }
+                            
                             // Get strategy based on network type and attempt number
                             val strategy = getStrategyForNetwork(attempt, networkType)
                             println("DEBUG: Using strategy: $strategy for $networkType")
                             
                             // Apply strategy-specific settings
                             when (strategy) {
-                                "reset_visitor", "aggressive_reset" -> {
+                                "reset_visitor" -> {
                                     println("DEBUG: Resetting visitor ID")
                                     api.visitor_id = null
                                     ensureVisitorId()
                                 }
-                                "mobile_emulation" -> {
-                                    // Try to emulate mobile client behavior
-                                    println("DEBUG: Emulating mobile client")
-                                    // Use mobileApi for this attempt
+                                "mobile_emulation", "aggressive_mobile", "desktop_fallback" -> {
+                                    // These strategies are handled by enhanced headers
+                                    println("DEBUG: Applying $strategy strategy with enhanced headers")
                                 }
                             }
                             
                             // Get video with different parameters based on strategy
                             val useDifferentParams = strategy != "standard"
-                            val currentVideoEndpoint = if (strategy == "mobile_emulation") mobileVideoEndpoint else videoEndpoint
+                            val currentVideoEndpoint = when (strategy) {
+                                "mobile_emulation", "aggressive_mobile" -> mobileVideoEndpoint
+                                "desktop_fallback" -> videoEndpoint  // Use standard API for desktop
+                                else -> videoEndpoint
+                            }
                             val (video, _) = currentVideoEndpoint.getVideo(useDifferentParams, videoId)
                             
                             // Process only audio formats (MP3 and MP4 audio) - based on real interception
@@ -340,11 +439,43 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     return@forEach
                                 }
                                 
-                                // Determine quality based on bitrate and sample rate - match real YouTube logic
+                                // Determine quality based on bitrate, sample rate, and network conditions
                                 val qualityValue = when {
-                                    format.bitrate > 0 -> format.bitrate.toInt()
-                                    format.audioSampleRate != null -> format.audioSampleRate!!.toInt()
-                                    else -> 128000 // Default quality (128kbps)
+                                    format.bitrate > 0 -> {
+                                        val baseBitrate = format.bitrate.toInt()
+                                        // Adaptive quality based on network type
+                                        when (networkType) {
+                                            "restricted_wifi" -> {
+                                                // Lower quality for restricted WiFi to reduce detection risk
+                                                minOf(baseBitrate, 128000)
+                                            }
+                                            "mobile_data" -> {
+                                                // Medium quality for mobile data
+                                                minOf(baseBitrate, 192000)
+                                            }
+                                            else -> {
+                                                // Full quality for other networks
+                                                baseBitrate
+                                            }
+                                        }
+                                    }
+                                    format.audioSampleRate != null -> {
+                                        val sampleRate = format.audioSampleRate!!.toInt()
+                                        // Adaptive quality based on sample rate and network
+                                        when (networkType) {
+                                            "restricted_wifi" -> minOf(sampleRate, 128000)
+                                            "mobile_data" -> minOf(sampleRate, 192000)
+                                            else -> sampleRate
+                                        }
+                                    }
+                                    else -> {
+                                        // Default quality based on network type
+                                        when (networkType) {
+                                            "restricted_wifi" -> 96000   // 96kbps
+                                            "mobile_data" -> 128000    // 128kbps
+                                            else -> 192000            // 192kbps
+                                        }
+                                    }
                                 }
                                 
                                 // Generate enhanced URL based on real YouTube Music behavior
@@ -358,9 +489,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 
                                 // Create POST-style request for mobile emulation strategies
                                 val audioSource = when (strategy) {
-                                    "mobile_emulation", "aggressive_reset" -> {
+                                    "mobile_emulation", "aggressive_mobile" -> {
                                         // Simulate POST request with body (from real interception: Content-Length: 2)
                                         createPostRequest(freshUrl, headers, "rn=1")
+                                    }
+                                    "desktop_fallback" -> {
+                                        // Desktop-style request
+                                        createPostRequest(freshUrl, headers, null)
                                     }
                                     else -> {
                                         // Standard GET request with enhanced headers
@@ -518,31 +653,60 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             "Sec-Fetch-Storage-Access" to "active"
         )
         
-        // Add mobile Chrome headers based on strategy
+        // Add mobile Chrome headers based on strategy - Enhanced with more realistic values
         when (strategy) {
-            "mobile_emulation", "aggressive_reset" -> {
+            "mobile_emulation" -> {
                 baseHeaders.putAll(mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
-                    "sec-ch-ua" to "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
+                    "User-Agent" to getRandomUserAgent(true),
+                    "sec-ch-ua" to "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
                     "sec-ch-ua-arch" to "\"\"",
                     "sec-ch-ua-bitness" to "\"\"",
                     "sec-ch-ua-form-factors" to "\"Mobile\"",
-                    "sec-ch-ua-full-version" to "138.0.7204.180",
-                    "sec-ch-ua-full-version-list" to "\"Not)A;Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"138.0.7204.180\", \"Google Chrome\";v=\"138.0.7204.180\"",
+                    "sec-ch-ua-full-version" to "120.0.6099.230",
+                    "sec-ch-ua-full-version-list" to "\"Not_A Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"120.0.6099.230\", \"Google Chrome\";v=\"120.0.6099.230\"",
                     "sec-ch-ua-mobile" to "?1",
                     "sec-ch-ua-model" to "vivo 1916",
                     "sec-ch-ua-platform" to "Android",
-                    "sec-ch-ua-platform-version" to "9.0.0",
+                    "sec-ch-ua-platform-version" to "13.0.0",
                     "sec-ch-ua-wow64" to "?0",
-                    "X-Browser-Channel" to "stable",
-                    "X-Browser-Copyright" to "Copyright 2025 Google LLC. All rights reserved.",
-                    "X-Browser-Validation" to "cgRO3CGCbt7QiyaJv5JRfyTvYHU=",
-                    "X-Browser-Year" to "2025",
-                    "X-Client-Data" to "CJW2yQEIpbbJAQipncoBCLbiygEIkqHLAQiqo8sBCIqgzQEI7/zOAQjegs8BCPqCzwEIlITPAQi3hc8BGJ6CzwEYzoLPAQ=="
+                    "Cache-Control" to "no-cache",
+                    "Pragma" to "no-cache"
+                ))
+            }
+            "aggressive_mobile" -> {
+                baseHeaders.putAll(mapOf(
+                    "User-Agent" to getRandomUserAgent(true),
+                    "sec-ch-ua" to "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+                    "sec-ch-ua-mobile" to "?1",
+                    "sec-ch-ua-platform" to "\"Android\"",
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                    "Accept-Language" to "en-US,en;q=0.5",
+                    "DNT" to "1",
+                    "Upgrade-Insecure-Requests" to "1"
+                ))
+            }
+            "desktop_fallback" -> {
+                baseHeaders.putAll(mapOf(
+                    "User-Agent" to getRandomUserAgent(false),
+                    "sec-ch-ua" to "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+                    "sec-ch-ua-mobile" to "?0",
+                    "sec-ch-ua-platform" to "\"Windows\"",
+                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                    "Accept-Language" to "en-US,en;q=0.9",
+                    "Sec-Fetch-Dest" to "document",
+                    "Sec-Fetch-Mode" to "navigate",
+                    "Sec-Fetch-Site" to "none",
+                    "Sec-Fetch-User" to "?1"
                 ))
             }
             else -> {
-                baseHeaders["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36"
+                // Default mobile headers
+                baseHeaders.putAll(mapOf(
+                    "User-Agent" to getRandomUserAgent(true),
+                    "sec-ch-ua" to "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+                    "sec-ch-ua-mobile" to "?1",
+                    "sec-ch-ua-platform" to "\"Android\""
+                ))
             }
         }
         
