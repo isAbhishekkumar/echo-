@@ -716,28 +716,38 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             if (mpdUrl != null && showVideos) {
                                 println("DEBUG: Found MPD stream URL: $mpdUrl")
                                 // Use MPD stream for mobile app format
-                                val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType)
-                                return@withNetworkAwareRetry mpdMedia
-                            }
-                            
-                            // Determine the final media type based on user preferences and available sources
-                            val targetQuality = getTargetVideoQuality(streamable)
-                            println("DEBUG: Target video quality: ${targetQuality ?: "any"}")
-                            
-                            val resultMedia = when {
-                                preferVideos && videoSources.isNotEmpty() && audioSources.isNotEmpty() -> {
-                                    // User prefers videos and we have both audio and video sources
-                                    println("DEBUG: Creating merged audio+video stream")
-                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
-                                    val bestVideoSource = getBestVideoSourceByQuality(videoSources, targetQuality)
+                                handleMPDStream(mpdUrl, strategy, networkType)
+                            } else {
+                                // Determine the final media type based on user preferences and available sources
+                                val targetQuality = getTargetVideoQuality(streamable)
+                                println("DEBUG: Target video quality: ${targetQuality ?: "any"}")
+                                
+                                when {
+                                    preferVideos && videoSources.isNotEmpty() && audioSources.isNotEmpty() -> {
+                                        // User prefers videos and we have both audio and video sources
+                                        println("DEBUG: Creating merged audio+video stream")
+                                        val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                                        val bestVideoSource = getBestVideoSourceByQuality(videoSources, targetQuality)
+                                        
+                                        if (bestAudioSource != null && bestVideoSource != null) {
+                                            Streamable.Media.Server(
+                                                sources = listOf(bestAudioSource, bestVideoSource),
+                                                merged = true
+                                            )
+                                        } else {
+                                            // Fallback to audio-only
+                                            val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                                            if (bestAudioSource != null) {
+                                                Streamable.Media.Server(listOf(bestAudioSource), false)
+                                            } else {
+                                                throw Exception("No valid audio sources found")
+                                            }
+                                        }
+                                    }
                                     
-                                    if (bestAudioSource != null && bestVideoSource != null) {
-                                        Streamable.Media.Server(
-                                            sources = listOf(bestAudioSource, bestVideoSource),
-                                            merged = true
-                                        )
-                                    } else {
-                                        // Fallback to audio-only
+                                    showVideos && videoSources.isNotEmpty() && !preferVideos -> {
+                                        // Videos are enabled but user prefers audio, still provide audio
+                                        println("DEBUG: Creating audio stream (video sources available but not preferred)")
                                         val bestAudioSource = audioSources.maxByOrNull { it.quality }
                                         if (bestAudioSource != null) {
                                             Streamable.Media.Server(listOf(bestAudioSource), false)
@@ -745,36 +755,24 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                             throw Exception("No valid audio sources found")
                                         }
                                     }
-                                }
-                                
-                                showVideos && videoSources.isNotEmpty() && !preferVideos -> {
-                                    // Videos are enabled but user prefers audio, still provide audio
-                                    println("DEBUG: Creating audio stream (video sources available but not preferred)")
-                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
-                                    if (bestAudioSource != null) {
-                                        Streamable.Media.Server(listOf(bestAudioSource), false)
-                                    } else {
-                                        throw Exception("No valid audio sources found")
+                                    
+                                    audioSources.isNotEmpty() -> {
+                                        // Audio-only mode or no video sources available
+                                        println("DEBUG: Creating audio-only stream")
+                                        val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                                        if (bestAudioSource != null) {
+                                            Streamable.Media.Server(listOf(bestAudioSource), false)
+                                        } else {
+                                            throw Exception("No valid audio sources found")
+                                        }
                                     }
-                                }
-                                
-                                audioSources.isNotEmpty() -> {
-                                    // Audio-only mode or no video sources available
-                                    println("DEBUG: Creating audio-only stream")
-                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
-                                    if (bestAudioSource != null) {
-                                        Streamable.Media.Server(listOf(bestAudioSource), false)
-                                    } else {
-                                        throw Exception("No valid audio sources found")
+                                    
+                                    else -> {
+                                        throw Exception("No valid media sources found")
                                     }
-                                }
-                                
-                                else -> {
-                                    throw Exception("No valid media sources found")
                                 }
                             }
-                            
-                            resultMedia
+                            }
                         } catch (e: Exception) {
                             println("DEBUG: Failed to process audio stream: ${e.message}")
                             throw Exception("Audio stream processing failed: ${e.message}")
@@ -847,8 +845,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             
                             if (mpdUrl != null) {
                                 println("DEBUG: Found MPD stream URL for video: $mpdUrl")
-                                val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType)
-                                return@withNetworkAwareRetry mpdMedia
+                                return@withNetworkAwareRetry handleMPDStream(mpdUrl, strategy, networkType)
                             }
                             
                             // Process formats for video streaming
@@ -958,8 +955,10 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     throw Exception("No valid video sources found")
                                 }
                             }
+                            }
                             
                             return@withNetworkAwareRetry resultMedia
+                        }
                         } catch (e: Exception) {
                             println("DEBUG: Video attempt $attempt failed: ${e.message}")
                             if (attempt < 5) {
@@ -968,6 +967,8 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             throw Exception("Video streaming failed after 5 attempts: ${e.message}")
                         }
                     }
+                    
+                    throw Exception("Video streaming failed after all attempts")
                 }
                 
                 else -> throw IllegalArgumentException("Unknown server streamable ID: ${streamable.id}")
