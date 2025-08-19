@@ -94,6 +94,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         data_language = ENGLISH
     )
     
+    // Mobile API instance for emulation
+    val mobileApi = YoutubeiApi(
+        data_language = "en"
+    )
+    
     // Ensure visitor ID is initialized before any API calls
     private suspend fun ensureVisitorId() {
         try {
@@ -138,6 +143,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     private val songEndPoint = EchoSongEndPoint(api)
     private val songRelatedEndpoint = EchoSongRelatedEndpoint(api)
     private val videoEndpoint = EchoVideoEndpoint(api)
+    private val mobileVideoEndpoint = EchoVideoEndpoint(mobileApi)
     private val playlistEndPoint = EchoPlaylistEndpoint(api)
     private val lyricsEndPoint = EchoLyricsEndPoint(api)
     private val searchSuggestionsEndpoint = EchoSearchSuggestionsEndpoint(api)
@@ -173,7 +179,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         // For now, we'll use a heuristic based on the current environment
         return try {
             // Try to detect if we're on a restricted network (like some WiFi networks)
-            val testConnection = java.net.URL("https://www.google.com").openConnection()
+            val testConnection = java.net.URL("https://www.google.com").openConnection() as java.net.HttpURLConnection
             testConnection.connectTimeout = 2000
             testConnection.readTimeout = 2000
             testConnection.requestMethod = "HEAD"
@@ -259,9 +265,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 }.joinToString("&")
                 
                 if (enhancedUrl.contains("?")) {
-                    this.url = "$enhancedUrl&headers=$headerString"
+                    url = "$enhancedUrl&headers=$headerString"
                 } else {
-                    this.url = "$enhancedUrl?headers=$headerString"
+                    url = "$enhancedUrl?headers=$headerString"
                 }
             },
             quality = 0 // Will be set by caller
@@ -306,14 +312,15 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                                 "mobile_emulation" -> {
                                     // Try to emulate mobile client behavior
-                                    api.data_language = "en"
                                     println("DEBUG: Emulating mobile client")
+                                    // Use mobileApi for this attempt
                                 }
                             }
                             
                             // Get video with different parameters based on strategy
                             val useDifferentParams = strategy != "standard"
-                            val (video, _) = videoEndpoint.getVideo(useDifferentParams, videoId)
+                            val currentVideoEndpoint = if (strategy == "mobile_emulation") mobileVideoEndpoint else videoEndpoint
+                            val (video, _) = currentVideoEndpoint.getVideo(useDifferentParams, videoId)
                             
                             // Process only audio formats (MP3 and MP4 audio) - based on real interception
                             video.streamingData.adaptiveFormats.forEach { format ->
