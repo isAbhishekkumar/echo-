@@ -717,7 +717,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 println("DEBUG: Found MPD stream URL: $mpdUrl")
                                 // Use MPD stream for mobile app format
                                 val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType)
-                                return mpdMedia
+                                return@withNetworkAwareRetry mpdMedia
                             }
                             
                             // Determine the final media type based on user preferences and available sources
@@ -774,7 +774,12 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                             }
                             
-                            return resultMedia
+                            resultMedia
+                        } catch (e: Exception) {
+                            println("DEBUG: Failed to process audio stream: ${e.message}")
+                            throw Exception("Audio stream processing failed: ${e.message}")
+                        }
+                    }
                 
                 "VIDEO_MP4", "VIDEO_WEBM" -> {
                     // Video streaming support with separate audio/video handling
@@ -843,7 +848,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             if (mpdUrl != null) {
                                 println("DEBUG: Found MPD stream URL for video: $mpdUrl")
                                 val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType)
-                                return mpdMedia
+                                return@withNetworkAwareRetry mpdMedia
                             }
                             
                             // Process formats for video streaming
@@ -954,7 +959,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                             }
                             
-                            return resultMedia
+                            return@withNetworkAwareRetry resultMedia
+                        } catch (e: Exception) {
+                            println("DEBUG: Video attempt $attempt failed: ${e.message}")
+                            if (attempt < 5) {
+                                continue
+                            }
+                            throw Exception("Video streaming failed after 5 attempts: ${e.message}")
                         }
                     }
                 }
