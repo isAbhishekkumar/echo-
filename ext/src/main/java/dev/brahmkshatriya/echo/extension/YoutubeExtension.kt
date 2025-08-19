@@ -95,6 +95,30 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             "Allows videos to be available when playing stuff. Instead of disabling videos, change the streaming quality as Medium in the app settings to select audio only by default.",
             true
         ),
+        SettingSwitch(
+            "Video Quality: 144p (Low)",
+            "quality_144p",
+            "Use 144p video quality - lowest data usage",
+            false
+        ),
+        SettingSwitch(
+            "Video Quality: 480p (Medium)",
+            "quality_480p",
+            "Use 480p video quality - balanced quality and data usage",
+            true
+        ),
+        SettingSwitch(
+            "Video Quality: 720p (High)",
+            "quality_720p",
+            "Use 720p video quality - high quality, more data usage",
+            false
+        ),
+        SettingSwitch(
+            "Video Quality: Off (Random)",
+            "quality_off",
+            "Use random available video quality",
+            false
+        ),
     )
 
     private lateinit var settings: Settings
@@ -151,8 +175,21 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     private val showVideos
         get() = settings.getBoolean("show_videos") != false
 
+    private val videoQuality: String
+        get() {
+            // Check which video quality setting is enabled
+            // Priority order: 144p, 480p, 720p, Off
+            return when {
+                settings.getBoolean("quality_144p") == true -> "144p"
+                settings.getBoolean("quality_480p") == true -> "480p"
+                settings.getBoolean("quality_720p") == true -> "720p"
+                settings.getBoolean("quality_off") == true -> "off"
+                else -> "480p" // Default to 480p if none are explicitly set
+            }
+        }
+
     /**
-     * Get the target video quality based on app settings
+     * Get the target video quality based on extension settings
      * Returns the target height in pixels (144, 480, 720, or null for any quality)
      */
     private fun getTargetVideoQuality(streamable: Streamable? = null): Int? {
@@ -162,39 +199,30 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             return null
         }
         
-        // Try to get quality setting from streamable extras - check multiple possible keys
-        val extras = streamable?.extras ?: emptyMap()
-        println("DEBUG: Available streamable extras: ${extras.keys}")
+        // Get the video quality setting from extension settings
+        val qualitySetting = videoQuality
+        println("DEBUG: Using extension video quality setting: $qualitySetting")
         
-        val qualitySetting = when {
-            extras.containsKey("quality") -> extras["quality"] as? String
-            extras.containsKey("streamQuality") -> extras["streamQuality"] as? String
-            extras.containsKey("videoQuality") -> extras["videoQuality"] as? String
-            else -> null
-        }
-        
-        println("DEBUG: Detected quality setting: $qualitySetting")
-        
-        val targetQuality = when (qualitySetting?.lowercase()) {
-            "lowest", "low", "144p" -> {
-                println("DEBUG: App quality setting: lowest (144p)")
+        val targetQuality = when (qualitySetting.lowercase()) {
+            "144p" -> {
+                println("DEBUG: Extension quality setting: 144p")
                 144
             }
-            "medium", "480p" -> {
-                println("DEBUG: App quality setting: medium (480p)")
+            "480p" -> {
+                println("DEBUG: Extension quality setting: 480p")
                 480
             }
-            "highest", "high", "720p", "1080p" -> {
-                println("DEBUG: App quality setting: highest (720p)")
+            "720p" -> {
+                println("DEBUG: Extension quality setting: 720p")
                 720
             }
-            "auto", "automatic" -> {
-                println("DEBUG: App quality setting: auto, using medium (480p)")
-                480
+            "off" -> {
+                println("DEBUG: Extension quality setting: Off (using random available quality)")
+                null
             }
             else -> {
-                // Default to medium quality if no specific setting is found
-                println("DEBUG: No quality setting found, defaulting to medium (480p)")
+                // Default to 480p if invalid setting is found
+                println("DEBUG: Invalid quality setting: $qualitySetting, defaulting to 480p")
                 480
             }
         }
