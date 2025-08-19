@@ -54,6 +54,7 @@ import dev.brahmkshatriya.echo.extension.endpoints.EchoSongFeedEndpoint
 import dev.brahmkshatriya.echo.extension.endpoints.EchoSongRelatedEndpoint
 import dev.brahmkshatriya.echo.extension.endpoints.EchoVideoEndpoint
 import dev.brahmkshatriya.echo.extension.endpoints.EchoVisitorEndpoint
+import dev.brahmkshatriya.echo.extension.endpoints.YoutubeFormatResponse.AdaptiveFormat
 import dev.toastbits.ytmkt.impl.youtubei.YoutubeiApi
 import dev.toastbits.ytmkt.impl.youtubei.YoutubeiAuthenticationState
 import dev.toastbits.ytmkt.model.external.PlaylistEditor
@@ -150,6 +151,124 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     private val showVideos
         get() = settings.getBoolean("show_videos") != false
+
+    /**
+     * Get the target video quality based on app settings
+     * Returns the target height in pixels (144, 480, 720, or null for any quality)
+     */
+    private fun getTargetVideoQuality(streamable: Streamable? = null): Int? {
+        // If videos are disabled, return null to use any available quality
+        if (!showVideos) {
+            println("DEBUG: Videos disabled, using any available quality")
+            return null
+        }
+        
+        // Try to get quality setting from streamable extras - check multiple possible keys
+        val extras = streamable?.extras ?: emptyMap()
+        println("DEBUG: Available streamable extras: ${extras.keys}")
+        
+        val qualitySetting = when {
+            extras.containsKey("quality") -> extras["quality"] as? String
+            extras.containsKey("streamQuality") -> extras["streamQuality"] as? String
+            extras.containsKey("videoQuality") -> extras["videoQuality"] as? String
+            else -> null
+        }
+        
+        println("DEBUG: Detected quality setting: $qualitySetting")
+        
+        val targetQuality = when (qualitySetting?.lowercase()) {
+            "lowest", "low", "144p" -> {
+                println("DEBUG: App quality setting: lowest (144p)")
+                144
+            }
+            "medium", "480p" -> {
+                println("DEBUG: App quality setting: medium (480p)")
+                480
+            }
+            "highest", "high", "720p", "1080p" -> {
+                println("DEBUG: App quality setting: highest (720p)")
+                720
+            }
+            "auto", "automatic" -> {
+                println("DEBUG: App quality setting: auto, using medium (480p)")
+                480
+            }
+            else -> {
+                // Default to medium quality if no specific setting is found
+                println("DEBUG: No quality setting found, defaulting to medium (480p)")
+                480
+            }
+        }
+        
+        return targetQuality
+    }
+    
+    /**
+     * Get the best video source based on target quality with enhanced filtering
+     */
+    private fun getBestVideoSourceByQuality(videoSources: List<Streamable.Source.Http>, targetQuality: Int?): Streamable.Source.Http? {
+        if (videoSources.isEmpty()) {
+            return null
+        }
+        
+        if (targetQuality == null) {
+            // When videos are disabled or no specific target, use the highest quality available
+            println("DEBUG: No quality restriction, selecting highest quality available")
+            val best = videoSources.maxByOrNull { it.quality }
+            println("DEBUG: Selected source with bitrate: ${best?.quality}")
+            return best
+        }
+        
+        println("DEBUG: Filtering ${videoSources.size} video sources for target quality: ${targetQuality}p")
+        videoSources.forEach { source ->
+            println("DEBUG: Available video source - bitrate: ${source.quality}")
+        }
+        
+        // Enhanced quality filtering based on more accurate bitrate ranges for YouTube video quality levels
+        val matchingSources = videoSources.filter { source ->
+            val bitrate = source.quality
+            val isMatch = when (targetQuality) {
+                144 -> {
+                    // 144p: very low bitrate, typically 50-300 kbps for video
+                    bitrate in 50000..300000
+                }
+                480 -> {
+                    // 480p: low to medium bitrate, typically 300-2000 kbps
+                    bitrate in 300000..2000000
+                }
+                720 -> {
+                    // 720p: medium to high bitrate, typically 1500-5000 kbps
+                    bitrate in 1500000..5000000
+                }
+                else -> {
+                    // For higher qualities or unknown targets, use the highest available
+                    true
+                }
+            }
+            
+            if (isMatch) {
+                println("DEBUG: ✓ Source matches quality criteria - bitrate: $bitrate for target ${targetQuality}p")
+            } else {
+                println("DEBUG: ✗ Source does not match quality criteria - bitrate: $bitrate for target ${targetQuality}p")
+            }
+            isMatch
+        }
+        
+        val selectedSource = if (matchingSources.isNotEmpty()) {
+            // Select the highest quality within the matching range
+            val best = matchingSources.maxByOrNull { it.quality }
+            println("DEBUG: Selected best matching source with bitrate: ${best?.quality}")
+            best
+        } else {
+            // Fallback to the best available if no matches found
+            println("DEBUG: No exact matches found, falling back to best available")
+            val fallback = videoSources.maxByOrNull { it.quality }
+            println("DEBUG: Fallback source with bitrate: ${fallback?.quality}")
+            fallback
+        }
+        
+        return selectedSource
+    }
 
     private val language = ENGLISH
 
@@ -559,12 +678,15 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             }
                             
                             // Determine the final media type based on user preferences and available sources
+                            val targetQuality = getTargetVideoQuality(streamable)
+                            println("DEBUG: Target video quality: ${targetQuality ?: "any"}")
+                            
                             val resultMedia = when {
                                 preferVideos && videoSources.isNotEmpty() && audioSources.isNotEmpty() -> {
                                     // User prefers videos and we have both audio and video sources
                                     println("DEBUG: Creating merged audio+video stream")
                                     val bestAudioSource = audioSources.maxByOrNull { it.quality }
-                                    val bestVideoSource = videoSources.maxByOrNull { it.quality }
+                                    val bestVideoSource = getBestVideoSourceByQuality(videoSources, targetQuality)
                                     
                                     if (bestAudioSource != null && bestVideoSource != null) {
                                         Streamable.Media.Server(
@@ -783,11 +905,14 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             }
                             
                             // Create merged audio+video stream
+                            val targetQuality = getTargetVideoQuality(streamable)
+                            println("DEBUG: Video mode - Target video quality: ${targetQuality ?: "any"}")
+                            
                             val resultMedia = when {
                                 videoSources.isNotEmpty() && audioSources.isNotEmpty() -> {
                                     println("DEBUG: Creating merged audio+video stream")
                                     val bestAudioSource = audioSources.maxByOrNull { it.quality }
-                                    val bestVideoSource = videoSources.maxByOrNull { it.quality }
+                                    val bestVideoSource = getBestVideoSourceByQuality(videoSources, targetQuality)
                                     
                                     if (bestAudioSource != null && bestVideoSource != null) {
                                         Streamable.Media.Server(
@@ -802,7 +927,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 videoSources.isNotEmpty() -> {
                                     // Video-only stream (no audio track)
                                     println("DEBUG: Creating video-only stream")
-                                    val bestVideoSource = videoSources.maxByOrNull { it.quality }
+                                    val bestVideoSource = getBestVideoSourceByQuality(videoSources, targetQuality)
                                     if (bestVideoSource != null) {
                                         Streamable.Media.Server(listOf(bestVideoSource), false)
                                     } else {
