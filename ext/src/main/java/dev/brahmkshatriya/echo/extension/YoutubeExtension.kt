@@ -69,7 +69,6 @@ import io.ktor.http.headers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.encodeToString
-import kotlinx.serialization.json.Json
 import java.security.MessageDigest
 
 class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFeedClient,
@@ -96,22 +95,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             "Allows videos to be available when playing stuff. Instead of disabling videos, change the streaming quality as Medium in the app settings to select audio only by default.",
             true
         ),
-        SettingSwitch(
-            "Enable Video Quality Selection",
-            "enable_video_quality",
-            "Enable separate video quality selection when Show Videos is enabled",
-            true
-        )
     )
 
     private lateinit var settings: Settings
     override fun setSettings(settings: Settings) {
         this.settings = settings
-    }
-
-    private val json = Json { 
-        ignoreUnknownKeys = true 
-        coerceInputValues = true 
     }
 
     val api = YoutubeiApi(
@@ -163,9 +151,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     private val showVideos
         get() = settings.getBoolean("show_videos") != false
 
-    private val enableVideoQualitySelection
-        get() = settings.getBoolean("enable_video_quality") != false
-
     /**
      * Get the target video quality based on app settings
      * Returns the target height in pixels (144, 480, 720, or null for any quality)
@@ -174,12 +159,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         // If videos are disabled, return null to use any available quality
         if (!showVideos) {
             println("DEBUG: Videos disabled, using any available quality")
-            return null
-        }
-        
-        // If video quality selection is disabled, use any available quality
-        if (!enableVideoQualitySelection) {
-            println("DEBUG: Video quality selection disabled, using any available quality")
             return null
         }
         
@@ -221,64 +200,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         }
         
         return targetQuality
-    }
-    
-    /**
-     * Enhanced retry mechanism with exponential backoff and strategy escalation
-     */
-    private suspend fun <T> withRetry(
-        maxAttempts: Int = 5,
-        initialDelay: Long = 1000,
-        operation: suspend (attempt: Int) -> T
-    ): T {
-        var lastException: Exception? = null
-        
-        for (attempt in 1..maxAttempts) {
-            try {
-                println("DEBUG: Retry attempt $attempt of $maxAttempts")
-                return operation(attempt)
-            } catch (e: Exception) {
-                lastException = e
-                println("DEBUG: Retry attempt $attempt failed: ${e.message}")
-                
-                if (attempt < maxAttempts) {
-                    val delay = initialDelay * (1L shl (attempt - 1)) // Exponential backoff
-                    println("DEBUG: Waiting ${delay}ms before next attempt")
-                    kotlinx.coroutines.delay(delay)
-                }
-            }
-        }
-        
-        throw lastException ?: Exception("All retry attempts failed")
-    }
-    
-    /**
-     * Enhanced network-aware retry with strategy progression
-     */
-    private suspend fun <T> withNetworkAwareRetry(
-        streamable: Streamable,
-        operation: suspend (attempt: Int, strategy: String, networkType: String) -> T
-    ): T {
-        return withRetry { attempt ->
-            val networkType = detectNetworkType()
-            val strategy = getStrategyForNetwork(attempt, networkType)
-            println("DEBUG: Attempt $attempt - Network: $networkType, Strategy: $strategy")
-            
-            try {
-                operation(attempt, strategy, networkType)
-            } catch (e: Exception) {
-                println("DEBUG: Operation failed with strategy $strategy: ${e.message}")
-                
-                // For certain errors, we might want to reset visitor ID
-                if (attempt == 3 && e.message?.contains("403") == true) {
-                    println("DEBUG: Resetting visitor ID due to 403 error")
-                    api.visitor_id = null
-                    ensureVisitorId()
-                }
-                
-                throw e
-            }
-        }
     }
     
     /**
@@ -581,46 +502,74 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     override suspend fun loadStreamableMedia(
         streamable: Streamable, isDownload: Boolean
     ): Streamable.Media {
-        return withNetworkAwareRetry(streamable) { attempt, strategy, networkType ->
-            when (streamable.type) {
-                Streamable.MediaType.Server -> when (streamable.id) {
-                    "AUDIO_MP3", "AUDIO_MP4", "AUDIO_WEBM" -> {
-                        // Enhanced audio-only streaming based on real YouTube Music web player behavior
-                        println("DEBUG: Loading audio stream for videoId: ${streamable.extras["videoId"]} (attempt $attempt)")
-                        
-                        // Ensure visitor ID is initialized
-                        ensureVisitorId()
-                        
-                        val videoId = streamable.extras["videoId"]!!
-                        var audioSources = mutableListOf<Streamable.Source.Http>()
-                        var videoSources = mutableListOf<Streamable.Source.Http>()
-                        
-                        println("DEBUG: Using strategy: $strategy for network type: $networkType")
-                        
+        return when (streamable.type) {
+            Streamable.MediaType.Server -> when (streamable.id) {
+                "AUDIO_MP3", "AUDIO_MP4", "AUDIO_WEBM" -> {
+                    // Enhanced audio-only streaming based on real YouTube Music web player behavior
+                    println("DEBUG: Loading audio stream for videoId: ${streamable.extras["videoId"]}")
+                    
+                    // Ensure visitor ID is initialized
+                    ensureVisitorId()
+                    
+                    val videoId = streamable.extras["videoId"]!!
+                    var audioSources = mutableListOf<Streamable.Source.Http>()
+                    var lastError: Exception? = null
+                    
+                    // Detect network type to apply appropriate strategies
+                    val networkType = detectNetworkType()
+                    println("DEBUG: Detected network type: $networkType")
+                    
+                    // Enhanced retry logic with network-aware strategies based on real YouTube behavior
+                    for (attempt in 1..5) {
                         try {
-                            // Get video information with enhanced headers and retry logic
-                            val video = withRetry { videoAttempt ->
-                                println("DEBUG: Getting video info (attempt $videoAttempt)")
-                                try {
-                                    videoEndpoint.getVideo(true, videoId).first
-                                } catch (e: Exception) {
-                                    println("DEBUG: Video endpoint failed, trying mobile endpoint (attempt $videoAttempt)")
-                                    mobileVideoEndpoint.getVideo(true, videoId).first
+                            println("DEBUG: Audio attempt $attempt of 5 on $networkType")
+                            
+                            // Add random delay to mimic human behavior (except for first attempt)
+                            if (attempt > 1) {
+                                val delay = (500L * attempt) + (Math.random() * 1000L).toLong()
+                                println("DEBUG: Adding random delay: ${delay}ms")
+                                kotlinx.coroutines.delay(delay)
+                            }
+                            
+                            // Get strategy based on network type and attempt number
+                            val strategy = getStrategyForNetwork(attempt, networkType)
+                            println("DEBUG: Using strategy: $strategy for $networkType")
+                            
+                            // Apply strategy-specific settings
+                            when (strategy) {
+                                "reset_visitor" -> {
+                                    println("DEBUG: Resetting visitor ID")
+                                    api.visitor_id = null
+                                    ensureVisitorId()
+                                }
+                                "mobile_emulation", "aggressive_mobile", "desktop_fallback" -> {
+                                    // These strategies are handled by enhanced headers
+                                    println("DEBUG: Applying $strategy strategy with enhanced headers")
                                 }
                             }
                             
-                            // Process formats for audio streaming
-                            audioSources.clear()
-                            videoSources.clear()
+                            // Get video with different parameters based on strategy
+                            val useDifferentParams = strategy != "standard"
+                            val currentVideoEndpoint = when (strategy) {
+                                "mobile_emulation", "aggressive_mobile" -> mobileVideoEndpoint
+                                "desktop_fallback" -> videoEndpoint  // Use standard API for desktop
+                                else -> videoEndpoint
+                            }
+                            val (video, _) = currentVideoEndpoint.getVideo(useDifferentParams, videoId)
                             
-                            for (format in video.streamingData.adaptiveFormats) {
-                                val originalUrl = format.url ?: continue
-                                val mimeType = format.mimeType
-                                println("DEBUG: Processing format: $mimeType")
+                            // Process formats based on user preferences and availability
+                            val audioSources = mutableListOf<Streamable.Source.Http>()
+                            val videoSources = mutableListOf<Streamable.Source.Http>()
+                            
+                            video.streamingData.adaptiveFormats.forEach { format ->
+                                val mimeType = format.mimeType.lowercase()
+                                val originalUrl = format.url ?: return@forEach
                                 
+                                // Categorize formats by type
                                 val isAudioFormat = when {
                                     mimeType.contains("audio/mp4") -> true
                                     mimeType.contains("audio/webm") -> true
+                                    mimeType.contains("audio/mp3") || mimeType.contains("audio/mpeg") -> true
                                     else -> false
                                 }
                                 
@@ -722,67 +671,93 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             if (mpdUrl != null && showVideos) {
                                 println("DEBUG: Found MPD stream URL: $mpdUrl")
                                 // Use MPD stream for mobile app format
-                                handleMPDStream(mpdUrl, strategy, networkType)
-                            } else {
-                                // Determine the final media type based on user preferences and available sources
-                                val targetQuality = getTargetVideoQuality(streamable)
-                                println("DEBUG: Target video quality: ${targetQuality ?: "any"}")
-                                
-                                when {
-                                    preferVideos && videoSources.isNotEmpty() && audioSources.isNotEmpty() -> {
-                                        // User prefers videos and we have both audio and video sources
-                                        println("DEBUG: Creating merged audio+video stream")
-                                        val bestAudioSource = audioSources.maxByOrNull { it.quality }
-                                        val bestVideoSource = getBestVideoSourceByQuality(videoSources, targetQuality)
-                                        
-                                        if (bestAudioSource != null && bestVideoSource != null) {
-                                            Streamable.Media.Server(
-                                                sources = listOf(bestAudioSource, bestVideoSource),
-                                                merged = true
-                                            )
-                                        } else {
-                                            // Fallback to audio-only
-                                            val bestAudioSource = audioSources.maxByOrNull { it.quality }
-                                            if (bestAudioSource != null) {
-                                                Streamable.Media.Server(listOf(bestAudioSource), false)
-                                            } else {
-                                                throw Exception("No valid audio sources found")
-                                            }
-                                        }
-                                    }
+                                val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType)
+                                lastError = null
+                                return mpdMedia
+                            }
+                            
+                            // Determine the final media type based on user preferences and available sources
+                            val targetQuality = getTargetVideoQuality(streamable)
+                            println("DEBUG: Target video quality: ${targetQuality ?: "any"}")
+                            
+                            val resultMedia = when {
+                                preferVideos && videoSources.isNotEmpty() && audioSources.isNotEmpty() -> {
+                                    // User prefers videos and we have both audio and video sources
+                                    println("DEBUG: Creating merged audio+video stream")
+                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                                    val bestVideoSource = getBestVideoSourceByQuality(videoSources, targetQuality)
                                     
-                                    showVideos && videoSources.isNotEmpty() && !preferVideos -> {
-                                        // Videos are enabled but user prefers audio, still provide audio
-                                        println("DEBUG: Creating audio stream (video sources available but not preferred)")
+                                    if (bestAudioSource != null && bestVideoSource != null) {
+                                        Streamable.Media.Server(
+                                            sources = listOf(bestAudioSource, bestVideoSource),
+                                            merged = true
+                                        )
+                                    } else {
+                                        // Fallback to audio-only
                                         val bestAudioSource = audioSources.maxByOrNull { it.quality }
                                         if (bestAudioSource != null) {
                                             Streamable.Media.Server(listOf(bestAudioSource), false)
                                         } else {
                                             throw Exception("No valid audio sources found")
                                         }
-                                    }
-                                    
-                                    audioSources.isNotEmpty() -> {
-                                        // Audio-only mode or no video sources available
-                                        println("DEBUG: Creating audio-only stream")
-                                        val bestAudioSource = audioSources.maxByOrNull { it.quality }
-                                        if (bestAudioSource != null) {
-                                            Streamable.Media.Server(listOf(bestAudioSource), false)
-                                        } else {
-                                            throw Exception("No valid audio sources found")
-                                        }
-                                    }
-                                    
-                                    else -> {
-                                        throw Exception("No valid media sources found")
                                     }
                                 }
+                                
+                                showVideos && videoSources.isNotEmpty() && !preferVideos -> {
+                                    // Videos are enabled but user prefers audio, still provide audio
+                                    println("DEBUG: Creating audio stream (video sources available but not preferred)")
+                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                                    if (bestAudioSource != null) {
+                                        Streamable.Media.Server(listOf(bestAudioSource), false)
+                                    } else {
+                                        throw Exception("No valid audio sources found")
+                                    }
+                                }
+                                
+                                audioSources.isNotEmpty() -> {
+                                    // Audio-only mode or no video sources available
+                                    println("DEBUG: Creating audio-only stream")
+                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                                    if (bestAudioSource != null) {
+                                        Streamable.Media.Server(listOf(bestAudioSource), false)
+                                    } else {
+                                        throw Exception("No valid audio sources found")
+                                    }
+                                }
+                                
+                                else -> {
+                                    throw Exception("No valid media sources found")
+                                }
                             }
+                            
+                            // Return the result and break out of retry loop
+                            lastError = null
+                            return resultMedia
+                            
                         } catch (e: Exception) {
-                            println("DEBUG: Failed to process audio stream: ${e.message}")
-                            throw Exception("Audio stream processing failed: ${e.message}")
+                            lastError = e
+                            println("DEBUG: Audio attempt $attempt failed with strategy ${getStrategyForNetwork(attempt, networkType)}: ${e.message}")
+                            
+                            // Adaptive delay between attempts to avoid rate limiting - match YouTube behavior
+                            if (attempt < 5) {
+                                val delayTime = when (attempt) {
+                                    1 -> 500L  // First failure: 500ms
+                                    2 -> 1000L // Second failure: 1s
+                                    3 -> 2000L // Third failure: 2s
+                                    4 -> 3000L // Fourth failure: 3s
+                                    else -> 500L
+                                }
+                                println("DEBUG: Waiting ${delayTime}ms before next attempt")
+                                kotlinx.coroutines.delay(delayTime)
+                            }
                         }
                     }
+                    
+                    // If all attempts failed, throw the last error with network info
+                    val errorMsg = "All audio attempts failed on $networkType. This might be due to network restrictions. Last error: ${lastError?.message}"
+                    println("DEBUG: $errorMsg")
+                    throw Exception(errorMsg)
+                }
                 
                 "VIDEO_MP4", "VIDEO_WEBM" -> {
                     // Video streaming support with separate audio/video handling
@@ -796,6 +771,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     ensureVisitorId()
                     
                     val videoId = streamable.extras["videoId"]!!
+                    var lastError: Exception? = null
                     
                     // Detect network type to apply appropriate strategies
                     val networkType = detectNetworkType()
@@ -850,7 +826,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             
                             if (mpdUrl != null) {
                                 println("DEBUG: Found MPD stream URL for video: $mpdUrl")
-                                return@withNetworkAwareRetry handleMPDStream(mpdUrl, strategy, networkType)
+                                val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType)
+                                lastError = null
+                                return mpdMedia
                             }
                             
                             // Process formats for video streaming
@@ -961,22 +939,37 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                             }
                             
-                            return@withNetworkAwareRetry resultMedia
+                            // Return the result and break out of retry loop
+                            lastError = null
+                            return resultMedia
+                            
                         } catch (e: Exception) {
-                            println("DEBUG: Video attempt $attempt failed: ${e.message}")
+                            lastError = e
+                            println("DEBUG: Video attempt $attempt failed with strategy ${getStrategyForNetwork(attempt, networkType)}: ${e.message}")
+                            
                             if (attempt < 5) {
-                                continue
+                                val delayTime = when (attempt) {
+                                    1 -> 500L
+                                    2 -> 1000L
+                                    3 -> 2000L
+                                    4 -> 3000L
+                                    else -> 1000L
+                                }
+                                kotlinx.coroutines.delay(delayTime)
                             }
-                            throw Exception("Video streaming failed after 5 attempts: ${e.message}")
                         }
                     }
                     
-                    throw Exception("Video streaming failed after all attempts")
+                    // If all attempts failed, throw the last error
+                    val errorMsg = "All video attempts failed on $networkType. Last error: ${lastError?.message}"
+                    println("DEBUG: $errorMsg")
+                    throw Exception(errorMsg)
                 }
                 
                 else -> throw IllegalArgumentException("Unknown server streamable ID: ${streamable.id}")
             }
             
+            // Add other MediaType cases to make when exhaustive
             Streamable.MediaType.Background -> throw IllegalArgumentException("Background media type not supported")
             Streamable.MediaType.Subtitle -> throw IllegalArgumentException("Subtitle media type not supported")
         }
@@ -1207,7 +1200,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         }
     }
 
-    override suspend fun loadTrack(track: Track): Track = coroutineScope {
+    override suspend fun loadTrack(track: Track) = coroutineScope {
         // Ensure visitor ID is initialized
         ensureVisitorId()
         
@@ -1261,11 +1254,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     override fun getShelves(track: Track) = PagedData.Single { loadRelated(track) }
 
-    override suspend fun deleteQuickSearch(item: QuickSearchItem): Unit {
+    override suspend fun deleteQuickSearch(item: QuickSearchItem) {
         searchSuggestionsEndpoint.delete(item as QuickSearchItem.Query)
     }
 
-    override suspend fun quickSearch(query: String): List<QuickSearchItem> = query.takeIf { it.isNotBlank() }?.run {
+    override suspend fun quickSearch(query: String) = query.takeIf { it.isNotBlank() }?.run {
         try {
             api.SearchSuggestions.getSearchSuggestions(this).getOrThrow()
                 .map { QuickSearchItem.Query(it.text, it.is_from_history) }
@@ -1362,7 +1355,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         )
     }
 
-    override suspend fun radio(user: User): Radio = radio(user.toArtist())
+    override suspend fun radio(user: User) = radio(user.toArtist())
 
     override suspend fun radio(playlist: Playlist): Radio {
         val track = loadTracks(playlist).loadAll().lastOrNull()
@@ -1425,7 +1418,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         return loadedArtist!!.toUser(HIGH)
     }
 
-    override suspend fun followArtist(artist: Artist, follow: Boolean): Unit {
+    override suspend fun followArtist(artist: Artist, follow: Boolean) {
         val subId = artist.extras["subId"] ?: throw Exception("No subId found")
         withUserAuth { it.SetSubscribedToArtist.setSubscribedToArtist(artist.id, follow, subId) }
     }
@@ -1488,7 +1481,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         }
     }
 
-    override suspend fun onSetLoginUser(user: User?): Unit {
+    override suspend fun onSetLoginUser(user: User?) {
         if (user == null) {
             api.user_auth_state = null
         } else {
@@ -1519,7 +1512,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     override val markAsPlayedDuration = 30000L
 
-    override suspend fun onMarkAsPlayed(details: TrackDetails): Unit {
+    override suspend fun onMarkAsPlayed(details: TrackDetails) {
         api.user_auth_state?.MarkSongAsWatched?.markSongAsWatched(details.track.id)?.getOrThrow()
     }
 
@@ -1567,11 +1560,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         return loadPlaylist(Playlist(playlistId, "", true))
     }
 
-    override suspend fun deletePlaylist(playlist: Playlist): Unit = withUserAuth {
+    override suspend fun deletePlaylist(playlist: Playlist) = withUserAuth {
         it.DeleteAccountPlaylist.deleteAccountPlaylist(playlist.id).getOrThrow()
     }
 
-    override suspend fun likeTrack(track: Track, isLiked: Boolean): Unit {
+    override suspend fun likeTrack(track: Track, isLiked: Boolean) {
         val likeStatus = if (isLiked) SongLikedStatus.LIKED else SongLikedStatus.NEUTRAL
         withUserAuth { it.SetSongLiked.setSongLiked(track.id, likeStatus).getOrThrow() }
     }
@@ -1651,9 +1644,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         listOf(Lyrics(lyricsId, track.title, data.second, Lyrics.Timed(lyrics)))
     }
 
-    override suspend fun loadLyrics(lyrics: Lyrics): Lyrics = lyrics
+    override suspend fun loadLyrics(lyrics: Lyrics) = lyrics
 
-    override suspend fun onShare(item: EchoMediaItem): String = when (item) {
+    override suspend fun onShare(item: EchoMediaItem) = when (item) {
         is EchoMediaItem.Lists.AlbumItem -> "https://music.youtube.com/browse/${item.id}"
         is EchoMediaItem.Lists.PlaylistItem -> "https://music.youtube.com/playlist?list=${item.id}"
         is EchoMediaItem.Lists.RadioItem -> "https://music.youtube.com/playlist?list=${item.id}"
