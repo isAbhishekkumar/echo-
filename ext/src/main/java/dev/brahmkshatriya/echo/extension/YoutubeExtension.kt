@@ -540,13 +540,22 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             }
                             
                             // Check if we have MPD (Media Presentation Description) support
-                            val mpdUrl = video.streamingData.dashManifestUrl
+                            // Note: The actual property name might be different, let's check available properties
+                            val mpdUrl = try {
+                                video.streamingData.javaClass.getDeclaredField("dashManifestUrl").let { field ->
+                                    field.isAccessible = true
+                                    field.get(video.streamingData) as? String
+                                }
+                            } catch (e: Exception) {
+                                null
+                            }
+                            
                             if (mpdUrl != null && showVideos) {
                                 println("DEBUG: Found MPD stream URL: $mpdUrl")
                                 // Use MPD stream for mobile app format
                                 val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType)
                                 lastError = null
-                                return@forEach mpdMedia
+                                return mpdMedia
                             }
                             
                             // Determine the final media type based on user preferences and available sources
@@ -566,7 +575,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                         // Fallback to audio-only
                                         val bestAudioSource = audioSources.maxByOrNull { it.quality }
                                         if (bestAudioSource != null) {
-                                            bestAudioSource.toServerMedia(0)
+                                            Streamable.Media.Server(listOf(bestAudioSource), false).toServerMedia(0)
                                         } else {
                                             throw Exception("No valid audio sources found")
                                         }
@@ -578,7 +587,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     println("DEBUG: Creating audio stream (video sources available but not preferred)")
                                     val bestAudioSource = audioSources.maxByOrNull { it.quality }
                                     if (bestAudioSource != null) {
-                                        bestAudioSource.toServerMedia(0)
+                                        Streamable.Media.Server(listOf(bestAudioSource), false).toServerMedia(0)
                                     } else {
                                         throw Exception("No valid audio sources found")
                                     }
@@ -589,7 +598,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     println("DEBUG: Creating audio-only stream")
                                     val bestAudioSource = audioSources.maxByOrNull { it.quality }
                                     if (bestAudioSource != null) {
-                                        bestAudioSource.toServerMedia(0)
+                                        Streamable.Media.Server(listOf(bestAudioSource), false).toServerMedia(0)
                                     } else {
                                         throw Exception("No valid audio sources found")
                                     }
@@ -602,7 +611,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             
                             // Return the result and break out of retry loop
                             lastError = null
-                            return@forEach resultMedia
+                            return resultMedia
                             
                         } catch (e: Exception) {
                             lastError = e
@@ -685,12 +694,20 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             val (video, _) = currentVideoEndpoint.getVideo(useDifferentParams, videoId)
                             
                             // Check if we have MPD support first (preferred for video)
-                            val mpdUrl = video.streamingData.dashManifestUrl
+                            val mpdUrl = try {
+                                video.streamingData.javaClass.getDeclaredField("dashManifestUrl").let { field ->
+                                    field.isAccessible = true
+                                    field.get(video.streamingData) as? String
+                                }
+                            } catch (e: Exception) {
+                                null
+                            }
+                            
                             if (mpdUrl != null) {
                                 println("DEBUG: Found MPD stream URL for video: $mpdUrl")
                                 val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType)
                                 lastError = null
-                                return@forEach mpdMedia
+                                return mpdMedia
                             }
                             
                             // Process formats for video streaming
@@ -787,7 +804,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     println("DEBUG: Creating video-only stream")
                                     val bestVideoSource = videoSources.maxByOrNull { it.quality }
                                     if (bestVideoSource != null) {
-                                        bestVideoSource.toServerMedia(0)
+                                        Streamable.Media.Server(listOf(bestVideoSource), false).toServerMedia(0)
                                     } else {
                                         throw Exception("No valid video sources found")
                                     }
@@ -800,7 +817,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             
                             // Return the result and break out of retry loop
                             lastError = null
-                            return@forEach resultMedia
+                            return resultMedia
                             
                         } catch (e: Exception) {
                             lastError = e
