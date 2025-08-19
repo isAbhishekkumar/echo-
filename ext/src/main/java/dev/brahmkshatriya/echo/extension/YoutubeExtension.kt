@@ -570,12 +570,12 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                         Streamable.Media.Server(
                                             sources = listOf(bestAudioSource, bestVideoSource),
                                             merged = true
-                                        ).toServerMedia(0)
+                                        )
                                     } else {
                                         // Fallback to audio-only
                                         val bestAudioSource = audioSources.maxByOrNull { it.quality }
                                         if (bestAudioSource != null) {
-                                            Streamable.Media.Server(listOf(bestAudioSource), false).toServerMedia(0)
+                                            Streamable.Media.Server(listOf(bestAudioSource), false)
                                         } else {
                                             throw Exception("No valid audio sources found")
                                         }
@@ -587,7 +587,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     println("DEBUG: Creating audio stream (video sources available but not preferred)")
                                     val bestAudioSource = audioSources.maxByOrNull { it.quality }
                                     if (bestAudioSource != null) {
-                                        Streamable.Media.Server(listOf(bestAudioSource), false).toServerMedia(0)
+                                        Streamable.Media.Server(listOf(bestAudioSource), false)
                                     } else {
                                         throw Exception("No valid audio sources found")
                                     }
@@ -598,7 +598,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     println("DEBUG: Creating audio-only stream")
                                     val bestAudioSource = audioSources.maxByOrNull { it.quality }
                                     if (bestAudioSource != null) {
-                                        Streamable.Media.Server(listOf(bestAudioSource), false).toServerMedia(0)
+                                        Streamable.Media.Server(listOf(bestAudioSource), false)
                                     } else {
                                         throw Exception("No valid audio sources found")
                                     }
@@ -793,7 +793,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                         Streamable.Media.Server(
                                             sources = listOf(bestAudioSource, bestVideoSource),
                                             merged = true
-                                        ).toServerMedia(0)
+                                        )
                                     } else {
                                         throw Exception("Could not create merged video stream")
                                     }
@@ -804,7 +804,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     println("DEBUG: Creating video-only stream")
                                     val bestVideoSource = videoSources.maxByOrNull { it.quality }
                                     if (bestVideoSource != null) {
-                                        Streamable.Media.Server(listOf(bestVideoSource), false).toServerMedia(0)
+                                        Streamable.Media.Server(listOf(bestVideoSource), false)
                                     } else {
                                         throw Exception("No valid video sources found")
                                     }
@@ -1068,7 +1068,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             Streamable.Media.Server(
                 sources = listOf(audioSource, videoSource),
                 merged = true
-            ).toServerMedia(0)
+            )
             
         } catch (e: Exception) {
             println("DEBUG: Failed to process MPD stream: ${e.message}")
