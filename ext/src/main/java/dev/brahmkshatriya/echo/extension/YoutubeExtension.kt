@@ -171,6 +171,31 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         throw NotImplementedError("Get shelves not implemented")
     }
 
+    override suspend fun getShelves(track: Track): PagedData<Shelf> {
+        TODO("Implement get shelves for track")
+        throw NotImplementedError("Get shelves for track not implemented")
+    }
+
+    override suspend fun getShelves(album: Album): PagedData<Shelf> {
+        TODO("Implement get shelves for album")
+        throw NotImplementedError("Get shelves for album not implemented")
+    }
+
+    override suspend fun getShelves(artist: Artist): PagedData<Shelf> {
+        TODO("Implement get shelves for artist")
+        throw NotImplementedError("Get shelves for artist not implemented")
+    }
+
+    override suspend fun getShelves(user: User): PagedData<Shelf> {
+        TODO("Implement get shelves for user")
+        throw NotImplementedError("Get shelves for user not implemented")
+    }
+
+    override suspend fun getShelves(playlist: Playlist): PagedData<Shelf> {
+        TODO("Implement get shelves for playlist")
+        throw NotImplementedError("Get shelves for playlist not implemented")
+    }
+
     override fun getHomeFeed(tab: Tab?) = PagedData.Continuous {
         val continuation = it
         val result = songFeedEndPoint.getSongFeed(
@@ -296,7 +321,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         val postBody = createAndroidPostBody(videoId, video)
         
         // Create the streamable media with Android-style request
-        return Streamable.Media.Companion.toServerMedia(
+        return toServerMedia(
             listOf(
                 Streamable.Source.Http(
                     request = finalUrl.toRequest(),
@@ -371,7 +396,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             throw Exception("No streaming sources found")
         }
         
-        return Streamable.Media.Companion.toServerMedia(
+        return toServerMedia(
             sources
         )
     }
@@ -456,7 +481,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     }
 
     override suspend fun searchTabs(query: String): List<Tab> {
-        return listOf(Tab("Tracks", ""), Tab("Artists", ""), Tab("Albums", ""), Tab("Playlists", ""))
+        return listOf(Tab("Tracks", "", null), Tab("Artists", "", null), Tab("Albums", "", null), Tab("Playlists", "", null))
     }
 
     override suspend fun radio(album: Album): Radio {
@@ -519,10 +544,10 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     }
 
     override suspend fun getLibraryTabs() = listOf(
-        Tab("Playlists", ""),
-        Tab("Songs", ""),
-        Tab("Albums", ""),
-        Tab("Artists", "")
+        Tab("Playlists", "", null),
+        Tab("Songs", "", null),
+        Tab("Albums", "", null),
+        Tab("Artists", "", null)
     )
 
     private suspend fun <T> withUserAuth(
