@@ -1234,7 +1234,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             val (video, _) = currentVideoEndpoint.getVideo(useDifferentParams, videoId)
                             
                             // Check if we have HLS (m3u8) support - PREFERRED for reliability
-                            val hlsUrl = try {
+                            val videoHlsUrl = try {
                                 video.streamingData.javaClass.getDeclaredField("hlsManifestUrl").let { field ->
                                     field.isAccessible = true
                                     field.get(video.streamingData) as? String
@@ -1243,15 +1243,15 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 null
                             }
                             
-                            if (hlsUrl != null) {
-                                println("DEBUG: Found HLS stream URL for video: $hlsUrl")
-                                val hlsMedia = handleHLSStream(hlsUrl, strategy, networkType)
+                            if (videoHlsUrl != null) {
+                                println("DEBUG: Found HLS stream URL for video: $videoHlsUrl")
+                                val hlsMedia = handleHLSStream(videoHlsUrl, strategy, networkType)
                                 lastError = null
                                 return hlsMedia
                             }
                             
                             // Check if we have MPD support first (preferred for video)
-                            val mpdUrl = try {
+                            val videoMpdUrl = try {
                                 video.streamingData.javaClass.getDeclaredField("dashManifestUrl").let { field ->
                                     field.isAccessible = true
                                     field.get(video.streamingData) as? String
@@ -1260,9 +1260,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 null
                             }
                             
-                            if (mpdUrl != null) {
-                                println("DEBUG: Found MPD stream URL for video: $mpdUrl")
-                                val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType)
+                            if (videoMpdUrl != null) {
+                                println("DEBUG: Found MPD stream URL for video: $videoMpdUrl")
+                                val mpdMedia = handleMPDStream(videoMpdUrl, strategy, networkType)
                                 lastError = null
                                 return mpdMedia
                             }
@@ -2222,7 +2222,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     ): Streamable.Source.Http {
         println("DEBUG: Creating quality-adaptive source with initial quality: $initialQuality")
         
-        val headers = generateMobileHeaders(strategy, networkType)
+        val headers = generateMobileHeaders(strategy, networkType).toMutableMap()
         
         // Add quality-adaptive headers
         headers.putAll(mapOf(
@@ -2376,109 +2376,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         }
     }
 
-    /**
-     * Handle HLS (m3u8) streams for adaptive streaming and better reliability
-     * HLS streams provide adaptive bitrate streaming and automatic fallback
-     * Enhanced with adaptive bitrate support and quality selection
-     */
-    private suspend fun handleHLSStream(hlsUrl: String, strategy: String, networkType: String): Streamable.Media {
-        println("DEBUG: Processing HLS stream from: $hlsUrl")
-        
-        return try {
-            // Generate enhanced HLS URL with strategy-specific parameters
-            val enhancedHlsUrl = generateEnhancedUrl(hlsUrl, 1, strategy, networkType)
-            
-            // Generate headers for HLS streaming
-            val hlsHeaders = generateMobileHeaders(strategy, networkType)
-            
-            // Add HLS-specific headers for better compatibility
-            hlsHeaders.putAll(mapOf(
-                "Accept" to "application/vnd.apple.mpegurl, application/x-mpegURL, video/mp2t",
-                "Accept-Encoding" to "gzip, deflate, br",
-                "Accept-Language" to "en-US,en;q=0.9",
-                "Cache-Control" to "no-cache",
-                "Connection" to "keep-alive",
-                "Pragma" to "no-cache"
-            ))
-            
-            // Determine optimal quality based on network type
-            val targetQuality = when (networkType) {
-                "restricted_wifi" -> 128000    // Lower quality for restricted WiFi
-                "restricted_wifi_403" -> 96000 // Even lower for problematic WiFi
-                "mobile_data" -> 192000       // High quality for mobile data
-                else -> 256000                 // Highest quality for good connections
-            }
-            
-            println("DEBUG: Target HLS quality for $networkType: $targetQuality")
-            
-            // Create adaptive bitrate HLS sources with different quality levels
-            val adaptiveSources = mutableListOf<Streamable.Source.Http>()
-            
-            // Quality levels for adaptive streaming (from highest to lowest)
-            val qualityLevels = listOf(
-                320000 to "high",    // 320kbps - high quality
-                256000 to "medium",  // 256kbps - medium quality  
-                192000 to "normal",  // 192kbps - normal quality
-                128000 to "low",     // 128kbps - low quality
-                96000 to "lower",    // 96kbps - lower quality
-                64000 to "lowest"    // 64kbps - lowest quality
-            )
-            
-            // Create sources for each quality level
-            qualityLevels.forEach { (quality, qualityName) ->
-                val qualityUrl = "${enhancedHlsUrl}/$qualityName"
-                val qualitySource = when (strategy) {
-                    "mobile_emulation", "aggressive_mobile" -> {
-                        createPostRequest(qualityUrl, hlsHeaders, "hls=1&quality=$qualityName&bitrate=$quality")
-                    }
-                    "desktop_fallback" -> {
-                        createPostRequest(qualityUrl, hlsHeaders, "quality=$qualityName&bitrate=$quality")
-                    }
-                    else -> {
-                        Streamable.Source.Http(
-                            qualityUrl.toRequest(),
-                            quality = quality
-                        )
-                    }
-                }
-                adaptiveSources.add(qualitySource)
-                println("DEBUG: Added HLS source for $qualityName quality ($quality bps)")
-            }
-            
-            // Create primary HLS source with target quality
-            val primaryQualityName = qualityLevels.find { it.first == targetQuality }?.second ?: "normal"
-            val primaryUrl = "${enhancedHlsUrl}/$primaryQualityName"
-            
-            val primaryHlsSource = when (strategy) {
-                "mobile_emulation", "aggressive_mobile" -> {
-                    createPostRequest(primaryUrl, hlsHeaders, "hls=1&quality=$primaryQualityName&bitrate=$targetQuality")
-                }
-                "desktop_fallback" -> {
-                    createPostRequest(primaryUrl, hlsHeaders, "quality=$primaryQualityName&bitrate=$targetQuality")
-                }
-                else -> {
-                    Streamable.Source.Http(
-                        primaryUrl.toRequest(),
-                        quality = targetQuality
-                    )
-                }
-            }
-            
-            // Create adaptive HLS media with multiple quality sources
-            println("DEBUG: Created adaptive HLS stream with ${adaptiveSources.size} quality levels")
-            
-            // Return the adaptive HLS media source
-            // The media player should automatically select the best quality based on network conditions
-            Streamable.Media.Server(
-                sources = listOf(primaryHlsSource) + adaptiveSources,
-                merged = false // HLS is typically a single adaptive stream
-            )
-            
-        } catch (e: Exception) {
-            println("DEBUG: Failed to process HLS stream: ${e.message}")
-            throw Exception("HLS stream processing failed: ${e.message}")
-        }
-    }
+  
 
     override suspend fun loadTrack(track: Track) = coroutineScope {
         // Ensure visitor ID is initialized
