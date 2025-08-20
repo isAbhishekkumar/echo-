@@ -507,14 +507,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         
         val enhancedUrl = if (body != null) {
             // Add mobile-specific parameters to simulate POST data
-            val mobileParams = mapOf(
-                "rn" to "1",
-                "alr" to "yes",
-                "c" to "ANDROID",
-                "cver" to "6.45.54",
-                "cos" to "Android",
-                "cplatform" to "mobile"
-            )
+            val mobileParams = mutableMapOf<String, String>()
+            mobileParams["rn"] = "1"
+            mobileParams["alr"] = "yes"
+            mobileParams["c"] = "ANDROID"
+            mobileParams["cver"] = "6.45.54"
+            mobileParams["cos"] = "Android"
+            mobileParams["cplatform"] = "mobile"
             
             val paramsString = mobileParams.map { "${it.key}=${it.value}" }.joinToString("&")
             if (url.contains("?")) {
@@ -528,19 +527,17 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         
         // Add mobile-specific headers to make it look like a real mobile app request
         val finalHeaders = headers.toMutableMap()
-        finalHeaders.putAll(mapOf(
-            "Content-Type" to "application/x-www-form-urlencoded",
-            "X-Goog-AuthUser" to "0",
-            "X-Goog-Visitor-Id" to api.visitor_id ?: "",
-            "X-Origin" to "https://music.youtube.com",
-            "X-YouTube-Client-Name" to "21",
-            "X-YouTube-Client-Version" to "6.45.54",
-            "X-YouTube-Device" to "sm-g930f",
-            "X-YouTube-Page-CL" to "123456789",
-            "X-YouTube-Page-Label" to "youtube.music",
-            "X-YouTube-Utc-Offset" to "0",
-            "X-YouTube-Time-Zone" to "UTC"
-        ))
+        finalHeaders["Content-Type"] = "application/x-www-form-urlencoded"
+        finalHeaders["X-Goog-AuthUser"] = "0"
+        finalHeaders["X-Goog-Visitor-Id"] = api.visitor_id?.toString() ?: ""
+        finalHeaders["X-Origin"] = "https://music.youtube.com"
+        finalHeaders["X-YouTube-Client-Name"] = "21"
+        finalHeaders["X-YouTube-Client-Version"] = "6.45.54"
+        finalHeaders["X-YouTube-Device"] = "sm-g930f"
+        finalHeaders["X-YouTube-Page-CL"] = "123456789"
+        finalHeaders["X-YouTube-Page-Label"] = "youtube.music"
+        finalHeaders["X-YouTube-Utc-Offset"] = "0"
+        finalHeaders["X-YouTube-Time-Zone"] = "UTC"
         
         // Add headers to the request - convert to URL parameters to simulate header behavior
         val headerString = finalHeaders.map { (key, value) ->
