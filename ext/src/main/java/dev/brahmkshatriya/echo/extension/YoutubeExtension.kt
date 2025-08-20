@@ -767,6 +767,8 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     
                     // Enhanced retry logic with network-aware strategies
                     for (attempt in 1..6) {
+                        // Get strategy based on network type and attempt number
+                        val networkType = detectNetworkType()
                         try {
                             println("DEBUG: Multi-format attempt $attempt of 6")
                             
@@ -777,8 +779,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 kotlinx.coroutines.delay(delay)
                             }
                             
-                            // Get strategy based on network type and attempt number
-                            val networkType = detectNetworkType()
                             val strategy = getStrategyForNetwork(attempt, networkType)
                             println("DEBUG: Using strategy: $strategy for $networkType")
                             
@@ -901,7 +901,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     isAudioFormat -> {
                                         // Process audio-only format with quality-adaptive streaming
                                         val qualityValue = when {
-                                            format.bitrate > 0 -> {
+                                            format.bitrate != null && format.bitrate > 0 -> {
                                                 val baseBitrate = format.bitrate.toInt()
                                                 when (networkType) {
                                                     "restricted_wifi" -> minOf(baseBitrate, 128000)
@@ -963,7 +963,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                         // Process combined format (audio + video in single stream)
                                         if (showVideos) {
                                             val qualityValue = when {
-                                                format.bitrate > 0 -> format.bitrate.toInt()
+                                                format.bitrate != null && format.bitrate > 0 -> format.bitrate.toInt()
                                                 format.height != null -> (format.height!! * 1000) + (format.bitrate?.toInt() ?: 0)
                                                 else -> 500000 // Default combined quality
                                             }
@@ -1265,7 +1265,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 if (!mimeType.contains("audio")) return@forEach
                                 
                                 val qualityValue = when {
-                                    format.bitrate > 0 -> {
+                                    format.bitrate != null && format.bitrate > 0 -> {
                                         val baseBitrate = format.bitrate.toInt()
                                         when (networkType) {
                                             "restricted_wifi" -> minOf(baseBitrate, 128000)
