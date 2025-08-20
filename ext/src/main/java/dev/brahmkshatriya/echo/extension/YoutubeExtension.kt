@@ -140,15 +140,8 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     private fun configureApiClients() {
         try {
             // Set safe User-Agent for the main API client
-            api.client = api.client.config {
-                // Configure the HTTP client to use safe User-Agents
-                // This prevents the issue where bare "Dalvik/2.1.0" gets blocked on Wi-Fi
-            }
-            
-            // Set safe User-Agent for the mobile API client
-            mobileApi.client = mobileApi.client.config {
-                // Configure the HTTP client to use safe User-Agents
-            }
+            // Note: In Kotlin, val properties cannot be reassigned, so we'll configure headers at request level
+            println("DEBUG: API clients will be configured with safe User-Agents at request level")
             
             println("DEBUG: API clients configured with safe User-Agents")
         } catch (e: Exception) {
@@ -1636,11 +1629,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 // Use authentic desktop headers for maximum compatibility
                 DESKTOP_HEADERS.toMutableMap().apply {
                     // Add some randomization to prevent detection
-                    if (attempt > 1) {
-                        put("Accept-Language", "en-US,en;q=0.8,en-GB;q=0.6")
-                        put("Cache-Control", "no-cache")
-                        put("Pragma", "no-cache")
-                    }
+                    put("Accept-Language", "en-US,en;q=0.8,en-GB;q=0.6")
+                    put("Cache-Control", "no-cache")
+                    put("Pragma", "no-cache")
                 }
             }
             else -> {
