@@ -1315,7 +1315,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     // Switch to mobile API context
                     val mobileApi = mobileApi
                     try {
-                        mobileApi.visitor_id = visitorEndpoint.getVisitorId().getOrNull()
+                        mobileApi.visitor_id = visitorEndpoint.getVisitorId()
                     } catch (e: Exception) {
                         println("DEBUG: Mobile API visitor ID failed: ${e.message}")
                     }
