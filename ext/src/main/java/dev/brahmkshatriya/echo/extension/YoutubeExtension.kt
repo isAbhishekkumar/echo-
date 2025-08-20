@@ -684,64 +684,227 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     /**
      * Handle MPD (Media Presentation Description) streams for mobile app format
+     * This extracts separate audio and video URLs from YouTube's adaptive formats
      */
-    private suspend fun handleMPDStream(mpdUrl: String, strategy: String, networkType: String): Streamable.Media {
-        println("DEBUG: Processing MPD stream from: $mpdUrl")
+    private suspend fun handleMPDStream(mpdUrl: String, strategy: String, networkType: String, videoId: String): Streamable.Media {
+        println("DEBUG: Processing MPD stream for videoId: $videoId")
         
         return try {
-            // For now, we'll simulate MPD handling by creating separate audio and video sources
-            // In a full implementation, you would parse the MPD XML and extract actual URLs
+            // Get the video data to access adaptive formats
+            val currentVideoEndpoint = when (strategy) {
+                "mobile_emulation", "aggressive_mobile" -> mobileVideoEndpoint
+                "desktop_fallback" -> videoEndpoint
+                else -> videoEndpoint
+            }
             
-            // Simulate getting audio and video URLs from MPD
-            val audioUrl = "$mpdUrl/audio"
-            val videoUrl = "$mpdUrl/video"
+            val (video, _) = currentVideoEndpoint.getVideo(false, videoId)
+            val audioSources = mutableListOf<Streamable.Source.Http>()
+            val videoSources = mutableListOf<Streamable.Source.Http>()
             
-            // Generate enhanced URLs for both streams
-            val enhancedAudioUrl = generateEnhancedUrl(audioUrl, 1, strategy, networkType)
-            val enhancedVideoUrl = generateEnhancedUrl(videoUrl, 1, strategy, networkType)
-            
-            // Generate headers for both streams
-            val audioHeaders = generateMobileHeaders(strategy, networkType)
-            val videoHeaders = generateMobileHeaders(strategy, networkType)
-            
-            // Create audio source
-            val audioSource = when (strategy) {
-                "mobile_emulation", "aggressive_mobile" -> {
-                    createPostRequest(enhancedAudioUrl, audioHeaders, "mpd=1&type=audio")
-                }
-                "desktop_fallback" -> {
-                    createPostRequest(enhancedAudioUrl, audioHeaders, "type=audio")
-                }
-                else -> {
-                    Streamable.Source.Http(
-                        enhancedAudioUrl.toRequest(),
-                        quality = 192000
-                    )
+            // Extract separate audio and video formats from adaptive formats
+            video.streamingData.adaptiveFormats.forEach { format ->
+                val mimeType = format.mimeType.lowercase()
+                val originalUrl = format.url ?: return@forEach
+                val itag = format.itag ?: 0
+                
+                when {
+                    // Standard audio formats using itag codes
+                    itag in listOf(139, 140, 141, 171, 249, 250, 251) -> {
+                        val qualityValue = format.bitrate?.toInt() ?: when (itag) {
+                            139 -> 48000    // 48k AAC HEv1
+                            140 -> 128000   // 128k AAC LC
+                            141 -> 256000   // 256k AAC LC (Premium)
+                            171 -> 128000   // 128k Vorbis
+                            249 -> 50000    // 50k Opus
+                            250 -> 70000    // 70k Opus
+                            251 -> 160000   // 160k Opus
+                            else -> 192000
+                        }
+                        val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
+                        
+                        val audioSource = createQualityAdaptiveSource(
+                            freshUrl,
+                            qualityValue,
+                            strategy,
+                            networkType
+                        )
+                        audioSources.add(audioSource)
+                        println("DEBUG: Added MPD audio source (itag: $itag, quality: $qualityValue)")
+                    }
+                    
+                    // Surround and special audio formats
+                    itag in listOf(256, 258, 325, 327, 328, 338, 380, 599, 600, 773, 774) -> {
+                        val qualityValue = format.bitrate?.toInt() ?: when (itag) {
+                            256 -> 192000   // AAC 5.1 192k
+                            258 -> 384000   // AAC 5.1 384k
+                            325 -> 384000   // DTSE 5.1 384k
+                            327 -> 256000   // AAC 5.1 256k
+                            328 -> 384000   // EAC3 5.1 384k
+                            338 -> 480000   // Opus Ambisonic ~480k
+                            380 -> 384000   // AC3 5.1 384k
+                            599 -> 30000    // AAC HEv1 30k (discontinued)
+                            600 -> 35000    // Opus 35k (discontinued)
+                            773 -> 900000   // IAMF/Opus Binaural ~900k
+                            774 -> 256000   // Opus Stereo 256k (YT Music Premium)
+                            else -> 192000
+                        }
+                        val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
+                        
+                        val audioSource = createQualityAdaptiveSource(
+                            freshUrl,
+                            qualityValue,
+                            strategy,
+                            networkType
+                        )
+                        audioSources.add(audioSource)
+                        println("DEBUG: Added MPD special audio source (itag: $itag, quality: $qualityValue)")
+                    }
+                    
+                    // Fallback audio detection by mime type
+                    mimeType.contains("audio") && !mimeType.contains("video") -> {
+                        val qualityValue = format.bitrate?.toInt() ?: 192000
+                        val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
+                        
+                        val audioSource = createQualityAdaptiveSource(
+                            freshUrl,
+                            qualityValue,
+                            strategy,
+                            networkType
+                        )
+                        audioSources.add(audioSource)
+                        println("DEBUG: Added MPD audio source by mime type (quality: $qualityValue, mimeType: $mimeType)")
+                    }
+                    
+                    // Standard video formats using itag codes
+                    itag in listOf(133, 134, 135, 136, 137, 138, 160, 264, 266, 298, 299) -> {
+                        val qualityValue = format.bitrate?.toInt() ?: when (itag) {
+                            133, 160 -> 300000    // 144p/240p H.264
+                            134 -> 500000        // 360p H.264
+                            135 -> 1000000       // 480p H.264
+                            136 -> 2000000       // 720p H.264
+                            137, 264 -> 4000000  // 1080p/1440p H.264
+                            138, 266 -> 8000000  // 2160p/2160p60 H.264
+                            298 -> 3000000       // 720p60 H.264
+                            299 -> 6000000       // 1080p60 H.264
+                            else -> 500000
+                        }
+                        val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
+                        
+                        val videoSource = createQualityAdaptiveSource(
+                            freshUrl,
+                            qualityValue,
+                            strategy,
+                            networkType
+                        )
+                        videoSources.add(videoSource)
+                        println("DEBUG: Added MPD video source (itag: $itag, quality: $qualityValue)")
+                    }
+                    
+                    // VP9 video formats
+                    itag in listOf(242, 243, 244, 245, 246, 247, 248, 271, 272, 278, 302, 303, 308, 313, 315) -> {
+                        val qualityValue = format.bitrate?.toInt() ?: when (itag) {
+                            242 -> 250000        // 240p VP9
+                            243 -> 500000        // 360p VP9
+                            244 -> 1000000       // 480p VP9
+                            245, 246 -> 1500000  // 480p VP9 (multiple variants)
+                            247 -> 2000000       // 720p VP9
+                            248 -> 3000000       // 1080p VP9
+                            271 -> 5000000       // 1440p VP9
+                            272 -> 15000000      // 4320p VP9
+                            278 -> 100000        // 144p VP9 (alternative)
+                            302 -> 2500000       // 720p60 VP9
+                            303 -> 5000000       // 1080p60 VP9
+                            308 -> 8000000       // 1440p60 VP9
+                            313 -> 20000000      // 2160p VP9
+                            315 -> 35000000      // 2160p60 VP9
+                            else -> 1000000
+                        }
+                        val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
+                        
+                        val videoSource = createQualityAdaptiveSource(
+                            freshUrl,
+                            qualityValue,
+                            strategy,
+                            networkType
+                        )
+                        videoSources.add(videoSource)
+                        println("DEBUG: Added MPD VP9 video source (itag: $itag, quality: $qualityValue)")
+                    }
+                    
+                    // AV1 video formats
+                    itag in listOf(394, 395, 396, 397, 398, 399, 400, 694, 695, 696, 697, 698, 699, 700, 701, 702) -> {
+                        val qualityValue = format.bitrate?.toInt() ?: when (itag) {
+                            394, 694 -> 100000    // 144p AV1
+                            395, 695 -> 200000    // 240p AV1
+                            396, 696 -> 400000    // 360p AV1
+                            397, 697 -> 800000    // 480p AV1
+                            398, 698 -> 1500000   // 720p AV1
+                            399, 699 -> 3000000   // 1080p AV1
+                            400, 700 -> 5000000   // 1440p AV1
+                            701 -> 8000000       // 2160p AV1
+                            702 -> 12000000      // 4320p AV1
+                            else -> 2000000
+                        }
+                        val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
+                        
+                        val videoSource = createQualityAdaptiveSource(
+                            freshUrl,
+                            qualityValue,
+                            strategy,
+                            networkType
+                        )
+                        videoSources.add(videoSource)
+                        println("DEBUG: Added MPD AV1 video source (itag: $itag, quality: $qualityValue)")
+                    }
+                    
+                    // Fallback video detection by mime type
+                    mimeType.contains("video") && !mimeType.contains("audio") -> {
+                        val qualityValue = format.bitrate?.toInt() ?: 500000
+                        val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
+                        
+                        val videoSource = createQualityAdaptiveSource(
+                            freshUrl,
+                            qualityValue,
+                            strategy,
+                            networkType
+                        )
+                        videoSources.add(videoSource)
+                        println("DEBUG: Added MPD video source by mime type (quality: $qualityValue, mimeType: $mimeType)")
+                    }
                 }
             }
             
-            // Create video source
-            val videoSource = when (strategy) {
-                "mobile_emulation", "aggressive_mobile" -> {
-                    createPostRequest(enhancedVideoUrl, videoHeaders, "mpd=1&type=video")
+            // Create the final media with separate audio and video sources
+            return when {
+                audioSources.isNotEmpty() && videoSources.isNotEmpty() -> {
+                    println("DEBUG: Creating MPD stream with separate audio and video sources")
+                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                    val bestVideoSource = videoSources.maxByOrNull { it.quality }
+                    
+                    if (bestAudioSource != null && bestVideoSource != null) {
+                        Streamable.Media.Server(
+                            sources = listOf(bestAudioSource, bestVideoSource),
+                            merged = true  // Player must merge separate audio and video streams
+                        )
+                    } else {
+                        throw Exception("Failed to extract valid MPD audio and video sources")
+                    }
                 }
-                "desktop_fallback" -> {
-                    createPostRequest(enhancedVideoUrl, videoHeaders, "type=video")
+                
+                audioSources.isNotEmpty() -> {
+                    println("DEBUG: MPD fallback to audio-only stream")
+                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                    if (bestAudioSource != null) {
+                        Streamable.Media.Server(listOf(bestAudioSource), merged = false)
+                    } else {
+                        throw Exception("Failed to extract valid MPD audio source")
+                    }
                 }
+                
                 else -> {
-                    Streamable.Source.Http(
-                        enhancedVideoUrl.toRequest(),
-                        quality = 500000
-                    )
+                    throw Exception("No valid MPD sources found")
                 }
             }
-            
-            println("DEBUG: Created MPD stream with audio and video sources")
-            
-            return Streamable.Media.Server(
-                sources = listOf(audioSource, videoSource),
-                merged = true // MPD typically requires merging audio and video
-            )
             
         } catch (e: Exception) {
             println("DEBUG: Failed to process MPD stream: ${e.message}")
@@ -863,7 +1026,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             if (mpdUrl != null && showVideos) {
                                 println("DEBUG: Found MPD stream URL: $mpdUrl")
                                 // Use MPD stream for mobile app format
-                                val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType)
+                                val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType, videoId)
                                 lastError = null
                                 return mpdMedia
                             }
@@ -876,25 +1039,55 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             video.streamingData.adaptiveFormats.forEach { format ->
                                 val mimeType = format.mimeType.lowercase()
                                 val originalUrl = format.url ?: return@forEach
+                                val itag = format.itag ?: 0
                                 
-                                // Categorize formats by type - Enhanced for YouTube adaptive streaming
-                                val isAudioFormat = when {
-                                    mimeType.contains("audio/mp4") && !mimeType.contains("video") -> true
-                                    mimeType.contains("audio/webm") && !mimeType.contains("video") -> true
-                                    mimeType.contains("audio/mp3") || mimeType.contains("audio/mpeg") -> true
-                                    else -> false
+                                // Categorize formats by type using comprehensive itag codes
+                                val isAudioFormat = when (itag) {
+                                    // Standard DASH audio itags
+                                    139, 140, 141, 171, 249, 250, 251 -> true
+                                    // Surround audio itags (rare)
+                                    256, 258, 327, 328, 380 -> true
+                                    // Special audio formats
+                                    325, 338, 599, 600, 773, 774 -> true
+                                    // Also check mime type as fallback
+                                    else -> when {
+                                        mimeType.contains("audio/mp4") && !mimeType.contains("video") -> true
+                                        mimeType.contains("audio/mp3") || mimeType.contains("audio/mpeg") -> true
+                                        mimeType.contains("audio/webm") || mimeType.contains("audio/opus") -> true
+                                        else -> false
+                                    }
                                 }
                                 
-                                val isVideoFormat = when {
-                                    mimeType.contains("video/mp4") && !mimeType.contains("audio") -> true
-                                    mimeType.contains("video/webm") && !mimeType.contains("audio") -> true
-                                    else -> false
+                                val isVideoFormat = when (itag) {
+                                    // Standard DASH video itags (MP4/H.264)
+                                    133, 134, 135, 136, 137, 138, 160, 264, 266, 298, 299 -> true
+                                    // VP9 video itags
+                                    242, 243, 244, 245, 246, 247, 248, 271, 272, 278, 298, 299, 302, 303, 308, 313, 315 -> true
+                                    // AV1 video itags
+                                    394, 395, 396, 397, 398, 399, 400, 694, 695, 696, 697, 698, 699, 700, 701, 702 -> true
+                                    // Rare/legacy video formats
+                                    5, 6, 17, 18, 22, 34, 35, 36, 37, 38, 43, 44, 45, 46 -> true
+                                    // Extra rare formats
+                                    228, 779, 780, 788 -> true
+                                    else -> when {
+                                        mimeType.contains("video/mp4") && !mimeType.contains("audio") -> true
+                                        mimeType.contains("video/webm") && !mimeType.contains("audio") -> true
+                                        else -> false
+                                    }
                                 }
                                 
-                                val isCombinedFormat = when {
-                                    mimeType.contains("video/mp4") && mimeType.contains("audio") -> true
-                                    mimeType.contains("video/webm") && mimeType.contains("audio") -> true
-                                    else -> false
+                                val isCombinedFormat = when (itag) {
+                                    // Legacy combined formats
+                                    5, 6, 17, 18, 22, 34, 35, 36, 37, 38 -> true
+                                    // 3D combined formats
+                                    82, 83, 84, 85 -> true
+                                    // HLS combined formats
+                                    91, 92, 93, 94, 95, 96, 132, 151, 300, 301 -> true
+                                    else -> when {
+                                        mimeType.contains("video/mp4") && mimeType.contains("audio") -> true
+                                        mimeType.contains("video/webm") && mimeType.contains("audio") -> true
+                                        else -> false
+                                    }
                                 }
                                 
                                 when {
@@ -1261,10 +1454,22 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             video.streamingData.adaptiveFormats.forEach { format ->
                                 val mimeType = format.mimeType.lowercase()
                                 val originalUrl = format.url ?: return@forEach
+                                val itag = format.itag ?: 0
                                 
                                 if (!mimeType.contains("audio")) return@forEach
                                 
                                 val qualityValue: Int = when {
+                                    // Use itag codes for precise quality identification
+                                    itag in listOf(139, 140, 141, 171, 249, 250, 251) -> when (itag) {
+                                        139 -> 48000    // 48k
+                                        140 -> 128000   // 128k
+                                        141 -> 256000   // 256k
+                                        171 -> 128000   // 128k
+                                        249 -> 50000    // 50k
+                                        250 -> 70000    // 70k
+                                        251 -> 160000   // 160k
+                                        else -> 192000
+                                    }
                                     format.bitrate != null && format.bitrate > 0 -> {
                                         val baseBitrate = format.bitrate.toInt()
                                         when (networkType) {
@@ -1378,7 +1583,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 Streamable.server(
                     "DUAL_STREAM",
                     0,
-                    "Audio & Combined Stream (HLS + MP3 + MP4+Audio + WebM+Audio) - Enhanced",
+                    "Audio & Combined Stream (HLS + MP3 + MP4+Audio) - Enhanced",
                     mapOf("videoId" to track.id)
                 ).takeIf { !isMusic && (showVideos || audioFiles.isNotEmpty()) },
                 Streamable.server(
