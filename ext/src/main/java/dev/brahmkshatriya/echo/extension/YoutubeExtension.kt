@@ -291,35 +291,48 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         const val SINGLES = "Singles"
         const val SONGS = "songs"
         
-        // Real mobile device User-Agents based on actual YouTube Music traffic
+        // Enhanced mobile device User-Agents based on actual YouTube Music traffic (updated)
         val MOBILE_USER_AGENTS = listOf(
-            "Mozilla/5.0 (Linux; Android 13; vivo 1916) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
-            "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
-            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36",
-            "Mozilla/5.0 (Linux; Android 12; SM-S906N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Mobile Safari/537.36"
+            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 13; vivo 1916) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.7204.180 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 12; SM-G991B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.7204.180 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.7204.180 Mobile Safari/537.36"
         )
         
         // Real desktop User-Agents for fallback
         val DESKTOP_USER_AGENTS = listOf(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Safari/537.36"
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.7204.180 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.7204.180 Safari/537.36"
         )
         
-        // Real YouTube Music headers based on intercepted traffic
+        // Enhanced YouTube Music headers based on real intercepted traffic
         val YOUTUBE_MUSIC_HEADERS = mapOf(
-            "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Language" to "en-US,en;q=0.9",
-            "Cache-Control" to "no-cache",
-            "Pragma" to "no-cache",
-            "Sec-Ch-Ua" to "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
-            "Sec-Ch-Ua-Mobile" to "?1",
-            "Sec-Ch-Ua-Platform" to "\"Android\"",
-            "Sec-Fetch-Dest" to "document",
-            "Sec-Fetch-Mode" to "navigate",
-            "Sec-Fetch-Site" to "none",
-            "Sec-Fetch-User" to "?1",
-            "Upgrade-Insecure-Requests" to "1",
+            "Accept" to "*/*",
+            "Accept-Encoding" to "gzip, deflate, br, zstd",
+            "Accept-Language" to "en-GB,en;q=0.9,en-US;q=0.8,hi;q=0.7",
+            "Connection" to "keep-alive",
+            "Host" to "music.youtube.com",
+            "Origin" to "https://music.youtube.com",
+            "Referer" to "https://music.youtube.com/",
+            "Sec-Fetch-Dest" to "empty",
+            "Sec-Fetch-Mode" to "cors",
+            "Sec-Fetch-Site" to "cross-site",
+            "Sec-Fetch-Storage-Access" to "active",
             "User-Agent" to MOBILE_USER_AGENTS[0] // Default to first mobile agent
+        )
+        
+        // Enhanced streaming headers based on real video playback traffic
+        val STREAMING_HEADERS = mapOf(
+            "Accept" to "*/*",
+            "Accept-Encoding" to "gzip, deflate, br, zstd",
+            "Accept-Language" to "en-GB,en;q=0.9,en-US;q=0.8,hi;q=0.7",
+            "Connection" to "keep-alive",
+            "Origin" to "https://music.youtube.com",
+            "Referer" to "https://music.youtube.com/",
+            "Sec-Fetch-Dest" to "empty",
+            "Sec-Fetch-Mode" to "cors",
+            "Sec-Fetch-Site" to "cross-site",
+            "Sec-Fetch-Storage-Access" to "active"
         )
     }
 
@@ -337,7 +350,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     }.toFeed()
 
     /**
-     * Enhanced network type detection with additional checks
+     * Enhanced network type detection with additional checks for WiFi restrictions
      */
     private fun detectNetworkType(): String {
         return try {
@@ -355,9 +368,23 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             youtubeTest.requestMethod = "HEAD"
             val youtubeResponse = youtubeTest.responseCode
             
+            // Test for 403 errors specifically on YouTube streaming URLs
+            val streamingTest = try {
+                val streamUrl = java.net.URL("https://rr2---sn-bxonu5gpo-cvhe.googlevideo.com/videoplayback?expire=1&test=true")
+                val streamTest = streamUrl.openConnection() as java.net.HttpURLConnection
+                streamTest.connectTimeout = 3000
+                streamTest.readTimeout = 3000
+                streamTest.requestMethod = "HEAD"
+                val streamResponse = streamTest.responseCode
+                streamResponse == 403
+            } catch (e: Exception) {
+                false // If we can't connect, assume it's not a 403 issue
+            }
+            
             when {
-                responseCode == 200 && youtubeResponse == 200 -> "mobile_data"
+                responseCode == 200 && youtubeResponse == 200 && !streamingTest -> "mobile_data"
                 responseCode == 200 && youtubeResponse != 200 -> "restricted_wifi"
+                responseCode == 200 && youtubeResponse == 200 && streamingTest -> "restricted_wifi_403"
                 else -> "restricted_wifi"
             }
         } catch (e: Exception) {
@@ -422,6 +449,17 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
      */
     private fun getStrategyForNetwork(attempt: Int, networkType: String): String {
         return when (networkType) {
+            "restricted_wifi_403" -> {
+                // For WiFi with 403 errors, use very aggressive strategies
+                when (attempt) {
+                    1 -> "reset_visitor"           // Reset visitor ID first
+                    2 -> "aggressive_mobile"      // Aggressive mobile emulation
+                    3 -> "mobile_emulation"       // Standard mobile emulation
+                    4 -> "alternate_params"       // Alternate parameters
+                    5 -> "desktop_fallback"        // Desktop fallback
+                    else -> "reset_visitor"
+                }
+            }
             "restricted_wifi" -> {
                 // For restricted WiFi, use more aggressive strategies earlier
                 when (attempt) {
@@ -546,6 +584,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     // These strategies are handled by enhanced headers
                                     println("DEBUG: Applying $strategy strategy with enhanced headers")
                                 }
+                            }
+                            
+                            // Enhanced WiFi restriction handling for problematic networks
+                            if (networkType.contains("wifi") || networkType.contains("restricted")) {
+                                handleWifiRestrictions(attempt, networkType)
                             }
                             
                             // Get video with different parameters based on strategy
@@ -736,19 +779,56 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             
                         } catch (e: Exception) {
                             lastError = e
-                            println("DEBUG: Audio attempt $attempt failed with strategy ${getStrategyForNetwork(attempt, networkType)}: ${e.message}")
+                            val is403Error = is403Error(e)
+                            val strategy = getStrategyForNetwork(attempt, networkType)
                             
-                            // Adaptive delay between attempts to avoid rate limiting - match YouTube behavior
+                            println("DEBUG: Audio attempt $attempt failed with strategy $strategy: ${e.message}")
+                            if (is403Error) {
+                                println("DEBUG: Detected 403 error - applying aggressive recovery")
+                            }
+                            
+                            // Enhanced delay strategy for 403 errors and network restrictions
                             if (attempt < 5) {
-                                val delayTime = when (attempt) {
-                                    1 -> 500L  // First failure: 500ms
-                                    2 -> 1000L // Second failure: 1s
-                                    3 -> 2000L // Third failure: 2s
-                                    4 -> 3000L // Fourth failure: 3s
-                                    else -> 500L
+                                val delayTime = when {
+                                    is403Error && networkType == "restricted_wifi_403" -> {
+                                        // Aggressive delay for 403 errors on restricted WiFi
+                                        when (attempt) {
+                                            1 -> 1000L  // First 403: 1s
+                                            2 -> 2000L  // Second 403: 2s
+                                            3 -> 4000L  // Third 403: 4s
+                                            4 -> 8000L  // Fourth 403: 8s
+                                            else -> 1000L
+                                        }
+                                    }
+                                    is403Error -> {
+                                        // Standard 403 error delay
+                                        when (attempt) {
+                                            1 -> 800L   // First 403: 800ms
+                                            2 -> 1500L  // Second 403: 1.5s
+                                            3 -> 3000L  // Third 403: 3s
+                                            4 -> 5000L  // Fourth 403: 5s
+                                            else -> 1000L
+                                        }
+                                    }
+                                    else -> {
+                                        // Standard adaptive delay for other errors
+                                        when (attempt) {
+                                            1 -> 500L   // First failure: 500ms
+                                            2 -> 1000L  // Second failure: 1s
+                                            3 -> 2000L  // Third failure: 2s
+                                            4 -> 3000L  // Fourth failure: 3s
+                                            else -> 500L
+                                        }
+                                    }
                                 }
-                                println("DEBUG: Waiting ${delayTime}ms before next attempt")
+                                println("DEBUG: Waiting ${delayTime}ms before next attempt (403: $is403Error)")
                                 kotlinx.coroutines.delay(delayTime)
+                                
+                                // Additional cache reset for 403 errors
+                                if (is403Error && attempt >= 2) {
+                                    println("DEBUG: Performing cache reset for 403 error recovery")
+                                    resetApiCache()
+                                }
                             }
                         }
                     }
@@ -945,17 +1025,56 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             
                         } catch (e: Exception) {
                             lastError = e
-                            println("DEBUG: Video attempt $attempt failed with strategy ${getStrategyForNetwork(attempt, networkType)}: ${e.message}")
+                            val is403Error = is403Error(e)
+                            val strategy = getStrategyForNetwork(attempt, networkType)
                             
+                            println("DEBUG: Video attempt $attempt failed with strategy $strategy: ${e.message}")
+                            if (is403Error) {
+                                println("DEBUG: Detected 403 error in video streaming - applying aggressive recovery")
+                            }
+                            
+                            // Enhanced delay strategy for 403 errors and network restrictions (same as audio)
                             if (attempt < 5) {
-                                val delayTime = when (attempt) {
-                                    1 -> 500L
-                                    2 -> 1000L
-                                    3 -> 2000L
-                                    4 -> 3000L
-                                    else -> 1000L
+                                val delayTime = when {
+                                    is403Error && networkType == "restricted_wifi_403" -> {
+                                        // Aggressive delay for 403 errors on restricted WiFi
+                                        when (attempt) {
+                                            1 -> 1000L  // First 403: 1s
+                                            2 -> 2000L  // Second 403: 2s
+                                            3 -> 4000L  // Third 403: 4s
+                                            4 -> 8000L  // Fourth 403: 8s
+                                            else -> 1000L
+                                        }
+                                    }
+                                    is403Error -> {
+                                        // Standard 403 error delay
+                                        when (attempt) {
+                                            1 -> 800L   // First 403: 800ms
+                                            2 -> 1500L  // Second 403: 1.5s
+                                            3 -> 3000L  // Third 403: 3s
+                                            4 -> 5000L  // Fourth 403: 5s
+                                            else -> 1000L
+                                        }
+                                    }
+                                    else -> {
+                                        // Standard adaptive delay for other errors
+                                        when (attempt) {
+                                            1 -> 500L   // First failure: 500ms
+                                            2 -> 1000L  // Second failure: 1s
+                                            3 -> 2000L  // Third failure: 2s
+                                            4 -> 3000L  // Fourth failure: 3s
+                                            else -> 500L
+                                        }
+                                    }
                                 }
+                                println("DEBUG: Waiting ${delayTime}ms before next video attempt (403: $is403Error)")
                                 kotlinx.coroutines.delay(delayTime)
+                                
+                                // Additional cache reset for 403 errors
+                                if (is403Error && attempt >= 2) {
+                                    println("DEBUG: Performing cache reset for video 403 error recovery")
+                                    resetApiCache()
+                                }
                             }
                         }
                     }
@@ -977,7 +1096,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     
     /**
      * Generate enhanced URL with strategy-specific parameters to bypass network restrictions
-     * Based on real YouTube Music web player interception data
+     * Enhanced with real YouTube Music web player interception data
      */
     private fun generateEnhancedUrl(originalUrl: String, attempt: Int, strategy: String, networkType: String): String {
         val timestamp = System.currentTimeMillis()
@@ -1000,13 +1119,16 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             emptyMap()
         }.toMutableMap()
         
-        // Add/update parameters based on strategy and network type
+        // Add/update parameters based on strategy and network type - Enhanced with real interception data
         when (strategy) {
             "standard" -> {
                 existingParams["t"] = timestamp.toString()
                 existingParams["r"] = random.toString()
                 existingParams["att"] = attempt.toString()
                 existingParams["nw"] = networkType
+                existingParams["alr"] = "yes" // From real interception
+                existingParams["svpuc"] = "1" // From real interception
+                existingParams["gir"] = "yes" // From real interception
             }
             "alternate_params" -> {
                 existingParams["time"] = (timestamp + 1000).toString()
@@ -1014,6 +1136,10 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 existingParams["attempt"] = attempt.toString()
                 existingParams["nw"] = networkType
                 existingParams["alr"] = "yes" // From real interception
+                existingParams["svpuc"] = "1" // From real interception
+                existingParams["gir"] = "yes" // From real interception
+                existingParams["srfvp"] = "1" // From real interception
+                existingParams["ump"] = "1" // From real interception
             }
             "reset_visitor" -> {
                 existingParams["ts"] = (timestamp + 2000).toString()
@@ -1022,6 +1148,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 existingParams["reset"] = "1"
                 existingParams["nw"] = networkType
                 existingParams["svpuc"] = "1" // From real interception
+                existingParams["gir"] = "yes" // From real interception
+                existingParams["alr"] = "yes" // From real interception
+                existingParams["pot"] = generateRandomPot() // From real interception
             }
             "mobile_emulation" -> {
                 // Emulate the exact mobile parameters from interception
@@ -1033,8 +1162,10 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 existingParams["nw"] = networkType
                 existingParams["gir"] = "yes" // From real interception
                 existingParams["alr"] = "yes" // From real interception
+                existingParams["svpuc"] = "1" // From real interception
+                existingParams["srfvp"] = "1" // From real interception
             }
-            "aggressive_reset" -> {
+            "aggressive_mobile" -> {
                 existingParams["cache_bust"] = (timestamp + 5000).toString()
                 existingParams["random_id"] = (random + 5000).toString()
                 existingParams["try_num"] = attempt.toString()
@@ -1044,6 +1175,20 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 existingParams["svpuc"] = "1"
                 existingParams["gir"] = "yes"
                 existingParams["alr"] = "yes"
+                existingParams["srfvp"] = "1"
+                existingParams["ump"] = "1"
+                existingParams["pot"] = generateRandomPot() // From real interception
+                existingParams["rn"] = (random + attempt).toString() // From real interception
+            }
+            "desktop_fallback" -> {
+                existingParams["desktop"] = "1"
+                existingParams["fallback"] = "1"
+                existingParams["t"] = timestamp.toString()
+                existingParams["r"] = random.toString()
+                existingParams["att"] = attempt.toString()
+                existingParams["nw"] = networkType
+                existingParams["alr"] = "yes"
+                existingParams["svpuc"] = "1"
             }
         }
         
@@ -1053,6 +1198,164 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         }.joinToString("&")
         
         return "$baseUrl?$paramString"
+    }
+    
+    /**
+     * Generate random pot parameter based on real YouTube Music interception
+     * This appears to be a unique identifier for each request
+     */
+    private fun generateRandomPot(): String {
+        val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+        val random = java.util.Random()
+        val pot = StringBuilder()
+        for (i in 0 until 64) { // Based on real interception length
+            pot.append(chars[random.nextInt(chars.length)])
+        }
+        return pot.toString()
+    }
+    
+    /**
+     * Check if an exception is a 403 error
+     */
+    private fun is403Error(exception: Exception): Boolean {
+        return when (exception) {
+            is ClientRequestException -> {
+                exception.response.status.value == 403
+            }
+            is java.net.HttpURLConnection -> {
+                try {
+                    exception.responseCode == 403
+                } catch (e: Exception) {
+                    false
+                }
+            }
+            else -> {
+                // Check error message for 403
+                exception.message?.contains("403", ignoreCase = true) == true ||
+                exception.message?.contains("Forbidden", ignoreCase = true) == true
+            }
+        }
+    }
+    
+    /**
+     * Reset API cache and clear stored data to simulate fresh request
+     * This helps bypass 403 errors by making YouTube think it's a new request
+     */
+    private suspend fun resetApiCache() {
+        try {
+            println("DEBUG: Resetting API cache for 403 error recovery")
+            
+            // Reset visitor ID to force new session
+            api.visitor_id = null
+            
+            // Clear any cached authentication state
+            api.user_auth_state = null
+            
+            // Force re-initialization of visitor ID
+            ensureVisitorId()
+            
+            // Add a small delay to ensure cache is cleared
+            kotlinx.coroutines.delay(200L)
+            
+            println("DEBUG: API cache reset completed")
+        } catch (e: Exception) {
+            println("DEBUG: Failed to reset API cache: ${e.message}")
+            // Continue even if cache reset fails
+        }
+    }
+    
+    /**
+     * Enhanced IP rotation and visitor ID regeneration for WiFi issues
+     * This function attempts to simulate different network conditions to bypass WiFi restrictions
+     */
+    private suspend fun handleWifiRestrictions(attempt: Int, networkType: String) {
+        try {
+            println("DEBUG: Handling WiFi restrictions for attempt $attempt on $networkType")
+            
+            when (attempt) {
+                1 -> {
+                    // First attempt: Basic visitor ID reset
+                    println("DEBUG: Basic visitor ID reset for WiFi restrictions")
+                    api.visitor_id = null
+                    ensureVisitorId()
+                }
+                2 -> {
+                    // Second attempt: Aggressive cache reset
+                    println("DEBUG: Aggressive cache reset for WiFi restrictions")
+                    resetApiCache()
+                    
+                    // Add random delay to simulate different network timing
+                    val randomDelay = (500L + Math.random() * 1000L).toLong()
+                    kotlinx.coroutines.delay(randomDelay)
+                }
+                3 -> {
+                    // Third attempt: Complete session reset with new parameters
+                    println("DEBUG: Complete session reset for WiFi restrictions")
+                    
+                    // Reset everything
+                    api.visitor_id = null
+                    api.user_auth_state = null
+                    
+                    // Force new visitor ID with different timing
+                    kotlinx.coroutines.delay(1000L)
+                    ensureVisitorId()
+                    
+                    // Add additional randomization
+                    val randomDelay = (1000L + Math.random() * 2000L).toLong()
+                    kotlinx.coroutines.delay(randomDelay)
+                }
+                4 -> {
+                    // Fourth attempt: Switch to mobile API emulation
+                    println("DEBUG: Switching to mobile API emulation for WiFi restrictions")
+                    
+                    // Use mobile API instead of standard API
+                    val tempVisitorId = api.visitor_id
+                    api.visitor_id = null
+                    
+                    // Switch to mobile API context
+                    val mobileApi = mobileApi
+                    try {
+                        mobileApi.visitor_id = visitorEndpoint.getVisitorId().getOrNull()
+                    } catch (e: Exception) {
+                        println("DEBUG: Mobile API visitor ID failed: ${e.message}")
+                    }
+                    
+                    // Restore original API but with new visitor ID
+                    api.visitor_id = tempVisitorId
+                    ensureVisitorId()
+                }
+                5 -> {
+                    // Fifth attempt: Last resort - complete reinitialization
+                    println("DEBUG: Complete reinitialization for WiFi restrictions")
+                    
+                    // Reset all cached data
+                    api.visitor_id = null
+                    api.user_auth_state = null
+                    
+                    // Clear any internal caches (if accessible)
+                    try {
+                        // Attempt to clear HTTP client cache
+                        val clientField = api::class.java.getDeclaredField("client")
+                        clientField.isAccessible = true
+                        val client = clientField.get(api) as io.ktor.client.HttpClient
+                        // Note: Actual cache clearing would depend on the HTTP client implementation
+                        
+                        println("DEBUG: Attempted to clear HTTP client cache")
+                    } catch (e: Exception) {
+                        println("DEBUG: Could not clear HTTP client cache: ${e.message}")
+                    }
+                    
+                    // Long delay to ensure complete reset
+                    kotlinx.coroutines.delay(2000L)
+                    ensureVisitorId()
+                }
+            }
+            
+            println("DEBUG: WiFi restriction handling completed for attempt $attempt")
+        } catch (e: Exception) {
+            println("DEBUG: Failed to handle WiFi restrictions: ${e.message}")
+            // Continue even if WiFi handling fails
+        }
     }
     
     /**
@@ -1073,42 +1376,51 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             "Sec-Fetch-Storage-Access" to "active"
         )
         
-        // Add mobile Chrome headers based on strategy - Enhanced with more realistic values
+        // Add mobile Chrome headers based on strategy - Enhanced with real YouTube Music interception data
         when (strategy) {
             "mobile_emulation" -> {
                 baseHeaders.putAll(mapOf(
                     "User-Agent" to getRandomUserAgent(true),
-                    "sec-ch-ua" to "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+                    "sec-ch-ua" to "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
                     "sec-ch-ua-arch" to "\"\"",
                     "sec-ch-ua-bitness" to "\"\"",
                     "sec-ch-ua-form-factors" to "\"Mobile\"",
-                    "sec-ch-ua-full-version" to "120.0.6099.230",
-                    "sec-ch-ua-full-version-list" to "\"Not_A Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"120.0.6099.230\", \"Google Chrome\";v=\"120.0.6099.230\"",
+                    "sec-ch-ua-full-version" to "138.0.7204.180",
+                    "sec-ch-ua-full-version-list" to "\"Not)A;Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"138.0.7204.180\", \"Google Chrome\";v=\"138.0.7204.180\"",
                     "sec-ch-ua-mobile" to "?1",
                     "sec-ch-ua-model" to "vivo 1916",
-                    "sec-ch-ua-platform" to "Android",
-                    "sec-ch-ua-platform-version" to "13.0.0",
+                    "sec-ch-ua-platform" to "\"Android\"",
+                    "sec-ch-ua-platform-version" to "9.0.0",
                     "sec-ch-ua-wow64" to "?0",
-                    "Cache-Control" to "no-cache",
-                    "Pragma" to "no-cache"
+                    "X-Browser-Channel" to "stable",
+                    "X-Browser-Copyright" to "Copyright 2025 Google LLC. All rights reserved.",
+                    "X-Browser-Validation" to "cgRO3CGCbt7QiyaJv5JRfyTvYHU=",
+                    "X-Browser-Year" to "2025",
+                    "X-Client-Data" to "CJW2yQEIpbbJAQipncoBCLbiygEIlKHLAQiKoM0BCO/8zgEI3oLPAQj6gs8BCJSEzwEIt4XPARiegs8BGM6CzwE="
                 ))
             }
             "aggressive_mobile" -> {
                 baseHeaders.putAll(mapOf(
-                    "User-Agent" to getRandomUserAgent(true),
-                    "sec-ch-ua" to "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+                    "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
+                    "sec-ch-ua" to "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
                     "sec-ch-ua-mobile" to "?1",
                     "sec-ch-ua-platform" to "\"Android\"",
-                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                    "Accept-Language" to "en-US,en;q=0.5",
-                    "DNT" to "1",
-                    "Upgrade-Insecure-Requests" to "1"
+                    "sec-ch-ua-model" to "",
+                    "sec-ch-ua-platform-version" to "9.0.0",
+                    "sec-ch-ua-wow64" to "?0",
+                    "Accept" to "*/*",
+                    "Accept-Language" to "en-GB,en;q=0.9,en-US;q=0.8,hi;q=0.7",
+                    "X-Browser-Channel" to "stable",
+                    "X-Browser-Copyright" to "Copyright 2025 Google LLC. All rights reserved.",
+                    "X-Browser-Validation" to "cgRO3CGCbt7QiyaJv5JRfyTvYHU=",
+                    "X-Browser-Year" to "2025",
+                    "X-Client-Data" to "CJW2yQEIpbbJAQipncoBCLbiygEIlKHLAQiKoM0BCO/8zgEI3oLPAQj6gs8BCJSEzwEIt4XPARiegs8BGM6CzwE="
                 ))
             }
             "desktop_fallback" -> {
                 baseHeaders.putAll(mapOf(
                     "User-Agent" to getRandomUserAgent(false),
-                    "sec-ch-ua" to "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+                    "sec-ch-ua" to "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
                     "sec-ch-ua-mobile" to "?0",
                     "sec-ch-ua-platform" to "\"Windows\"",
                     "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
@@ -1120,12 +1432,16 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 ))
             }
             else -> {
-                // Default mobile headers
+                // Default mobile headers with real YouTube Music data
                 baseHeaders.putAll(mapOf(
                     "User-Agent" to getRandomUserAgent(true),
-                    "sec-ch-ua" to "\"Not_A Brand\";v=\"8\", \"Chromium\";v=\"120\", \"Google Chrome\";v=\"120\"",
+                    "sec-ch-ua" to "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
                     "sec-ch-ua-mobile" to "?1",
-                    "sec-ch-ua-platform" to "\"Android\""
+                    "sec-ch-ua-platform" to "\"Android\"",
+                    "X-Browser-Channel" to "stable",
+                    "X-Browser-Copyright" to "Copyright 2025 Google LLC. All rights reserved.",
+                    "X-Browser-Validation" to "cgRO3CGCbt7QiyaJv5JRfyTvYHU=",
+                    "X-Browser-Year" to "2025"
                 ))
             }
         }
