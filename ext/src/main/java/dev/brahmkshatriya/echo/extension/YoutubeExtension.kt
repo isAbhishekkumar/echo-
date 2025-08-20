@@ -70,6 +70,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.encodeToString
 import java.security.MessageDigest
+import kotlin.text.Regex
 
 class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFeedClient,
     RadioClient, AlbumClient, ArtistClient, UserClient, PlaylistClient, LoginClient.WebView,
@@ -370,7 +371,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     /**
      * Extract authentication headers from user session - Enhanced for WiFi compatibility
      */
-    private suspend fun extractAuthenticationHeaders(): Map<String, String> {
+    private fun extractAuthenticationHeaders(): Map<String, String> {
         val authHeaders = mutableMapOf<String, String>()
         
         try {
@@ -445,9 +446,12 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         val baseHeaders = generateMobileHeaders(strategy, networkType).toMutableMap()
         
         // Add authentication headers for WiFi compatibility
-        val authHeaders = runCatching {
+        val authHeaders = try {
             extractAuthenticationHeaders()
-        }.getOrNull() ?: emptyMap()
+        } catch (e: Exception) {
+            println("DEBUG: Failed to get auth headers, using fallback: ${e.message}")
+            emptyMap()
+        }
         
         baseHeaders.putAll(authHeaders)
         
