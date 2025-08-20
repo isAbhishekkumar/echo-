@@ -760,17 +760,17 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 val itag = format.itag ?: 0
                 
                 when (itag) {
-                        // YouTube Music Core Audio Formats
-                        139, 140, 141, 249, 250, 251, 774 -> {
+                    // YouTube Music Core Audio Formats
+                    139, 140, 141, 249, 250, 251, 774 -> {
                         val qualityValue = format.bitrate?.toInt() ?: when (itag) {
-                            139 -> 48000.toInt()    // 48k AAC HEv1 (YT Music, DRC)
-                            140 -> 128000.toInt()   // 128k AAC LC (YT Music, DRC) - Most common
-                            141 -> 256000.toInt()   // 256k AAC LC (Premium only)
-                            249 -> 50000.toInt()    // 50k Opus (DRC)
-                            250 -> 70000.toInt()    // 70k Opus (DRC)
-                            251 -> 160000.toInt()   // 160k Opus (DRC) - High quality
-                            774 -> 256000.toInt()   // 256k Opus (YT Music Premium) - Best quality
-                            else -> 128000.toInt()
+                            139 -> 48000    // 48k AAC HEv1 (YT Music, DRC)
+                            140 -> 128000   // 128k AAC LC (YT Music, DRC) - Most common
+                            141 -> 256000   // 256k AAC LC (Premium only)
+                            249 -> 50000    // 50k Opus (DRC)
+                            250 -> 70000    // 70k Opus (DRC)
+                            251 -> 160000   // 160k Opus (DRC) - High quality
+                            774 -> 256000   // 256k Opus (YT Music Premium) - Best quality
+                            else -> 128000
                         }
                         val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
                         
@@ -785,7 +785,8 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     }
                     
                     // Fallback audio detection by mime type
-                    mimeType.contains("audio") && !mimeType.contains("video") -> {
+                    else -> {
+                        if (mimeType.contains("audio") && !mimeType.contains("video")) {
                         val qualityValue = format.bitrate?.toInt() ?: 192000
                         val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
                         
@@ -797,16 +798,17 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         )
                         audioSources.add(audioSource)
                         println("DEBUG: Added MPD audio source by mime type (quality: $qualityValue, mimeType: $mimeType)")
+                        }
                     }
                     
                     // Essential Music Video Formats (H.264)
                     133, 134, 135, 136, 160 -> {
                         val qualityValue = format.bitrate?.toInt() ?: when (itag) {
-                            133, 160 -> 300000.toInt()    // 144p/240p H.264 (basic)
-                            134 -> 500000.toInt()        // 360p H.264 (standard)
-                            135 -> 1000000.toInt()       // 480p H.264 (good)
-                            136 -> 2000000.toInt()       // 720p H.264 (HD)
-                            else -> 500000.toInt()
+                            133, 160 -> 300000    // 144p/240p H.264 (basic)
+                            134 -> 500000        // 360p H.264 (standard)
+                            135 -> 1000000       // 480p H.264 (good)
+                            136 -> 2000000       // 720p H.264 (HD)
+                            else -> 500000
                         }
                         val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
                         
@@ -823,10 +825,10 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     // Efficient VP9 Music Video Formats
                     243, 244, 247 -> {
                         val qualityValue = format.bitrate?.toInt() ?: when (itag) {
-                            243 -> 500000.toInt()        // 360p VP9 (efficient)
-                            244 -> 1000000.toInt()       // 480p VP9 (efficient)
-                            247 -> 2000000.toInt()       // 720p VP9 (efficient HD)
-                            else -> 1000000.toInt()
+                            243 -> 500000        // 360p VP9 (efficient)
+                            244 -> 1000000       // 480p VP9 (efficient)
+                            247 -> 2000000       // 720p VP9 (efficient HD)
+                            else -> 1000000
                         }
                         val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
                         
@@ -841,7 +843,8 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     }
                     
                     // Fallback video detection by mime type
-                    mimeType.contains("video") && !mimeType.contains("audio") -> {
+                    else -> {
+                        if (mimeType.contains("video") && !mimeType.contains("audio")) {
                         val qualityValue = format.bitrate?.toInt() ?: 500000
                         val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
                         
@@ -853,6 +856,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         )
                         videoSources.add(videoSource)
                         println("DEBUG: Added MPD video source by mime type (quality: $qualityValue, mimeType: $mimeType)")
+                        }
                     }
                 }
             }
@@ -1432,37 +1436,37 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 val qualityValue: Int = when (itag) {
                                     // YouTube Music Core Audio Formats
                                     139, 140, 141, 249, 250, 251, 774 -> when (itag) {
-                                        139 -> 48000.toInt()    // 48k AAC HEv1
-                                        140 -> 128000.toInt()   // 128k AAC LC - Most common
-                                        141 -> 256000.toInt()   // 256k AAC LC (Premium)
-                                        249 -> 50000.toInt()    // 50k Opus
-                                        250 -> 70000.toInt()    // 70k Opus
-                                        251 -> 160000.toInt()   // 160k Opus - High quality
-                                        774 -> 256000.toInt()   // 256k Opus (YT Music Premium) - Best quality
-                                        else -> 128000.toInt()
+                                        139 -> 48000    // 48k AAC HEv1
+                                        140 -> 128000   // 128k AAC LC - Most common
+                                        141 -> 256000   // 256k AAC LC (Premium)
+                                        249 -> 50000    // 50k Opus
+                                        250 -> 70000    // 70k Opus
+                                        251 -> 160000   // 160k Opus - High quality
+                                        774 -> 256000   // 256k Opus (YT Music Premium) - Best quality
+                                        else -> 128000
                                     }
-                                    format.bitrate != null && format.bitrate > 0 -> {
+                                    else -> {
+                                        if (format.bitrate != null && format.bitrate > 0) {
                                         val baseBitrate = format.bitrate.toInt()
                                         when (networkType) {
                                             "restricted_wifi" -> min(baseBitrate, 128000)
                                             "mobile_data" -> min(baseBitrate, 192000)
                                             else -> baseBitrate
                                         }
-                                    }
-                                    format.audioSampleRate != null -> {
+                                    } else if (format.audioSampleRate != null) {
                                         val sampleRate = format.audioSampleRate!!.toInt()
                                         when (networkType) {
                                             "restricted_wifi" -> min(sampleRate, 128000)
                                             "mobile_data" -> min(sampleRate, 192000)
                                             else -> sampleRate
                                         }
-                                    }
-                                    else -> {
+                                    } else {
                                         when (networkType) {
                                             "restricted_wifi" -> 96000
                                             "mobile_data" -> 128000
                                             else -> 192000
                                         }
+                                    }
                                     }
                                 }
                                 
