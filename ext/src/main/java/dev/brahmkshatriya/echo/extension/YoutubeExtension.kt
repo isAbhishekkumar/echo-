@@ -498,29 +498,51 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     /**
      * Create a POST request with enhanced headers based on real YouTube Music behavior
+     * Enhanced to properly simulate mobile app requests
      */
     private fun createPostRequest(url: String, headers: Map<String, String>, body: String? = null): Streamable.Source.Http {
-        // For now, we'll use the URL approach but with enhanced headers
-        // In a full implementation, you might need to modify the underlying HTTP client
-        // to actually send POST requests with the specified body
+        // Create a custom request that simulates POST behavior
+        // Since we can't easily modify the underlying HTTP client, we'll enhance the URL
+        // and headers to mimic mobile app behavior
         
         val enhancedUrl = if (body != null) {
-            // Add body parameters as URL parameters for GET request
+            // Add mobile-specific parameters to simulate POST data
+            val mobileParams = mapOf(
+                "rn" to "1",
+                "alr" to "yes",
+                "c" to "ANDROID",
+                "cver" to "6.45.54",
+                "cos" to "Android",
+                "cplatform" to "mobile"
+            )
+            
+            val paramsString = mobileParams.map { "${it.key}=${it.value}" }.joinToString("&")
             if (url.contains("?")) {
-                "$url&post_data=${body.hashCode()}"
+                "$url&$paramsString"
             } else {
-                "$url?post_data=${body.hashCode()}"
+                "$url?$paramsString"
             }
         } else {
             url
         }
         
-        // Add enhanced headers to the request
+        // Add mobile-specific headers to make it look like a real mobile app request
         val finalHeaders = headers.toMutableMap()
-        finalHeaders.putAll(YOUTUBE_MUSIC_HEADERS)
+        finalHeaders.putAll(mapOf(
+            "Content-Type" to "application/x-www-form-urlencoded",
+            "X-Goog-AuthUser" to "0",
+            "X-Goog-Visitor-Id" to api.visitor_id ?: "",
+            "X-Origin" to "https://music.youtube.com",
+            "X-YouTube-Client-Name" to "21",
+            "X-YouTube-Client-Version" to "6.45.54",
+            "X-YouTube-Device" to "sm-g930f",
+            "X-YouTube-Page-CL" to "123456789",
+            "X-YouTube-Page-Label" to "youtube.music",
+            "X-YouTube-Utc-Offset" to "0",
+            "X-YouTube-Time-Zone" to "UTC"
+        ))
         
-        // Add headers to the request - this depends on how the Request class handles headers
-        // For now, we'll add them as URL parameters to simulate header behavior
+        // Add headers to the request - convert to URL parameters to simulate header behavior
         val headerString = finalHeaders.map { (key, value) ->
             "${key.hashCode()}=${value.hashCode()}"
         }.joinToString("&")
@@ -573,16 +595,32 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             val strategy = getStrategyForNetwork(attempt, networkType)
                             println("DEBUG: Using strategy: $strategy for $networkType")
                             
-                            // Apply strategy-specific settings
+                            // Apply strategy-specific settings BEFORE making the request
                             when (strategy) {
                                 "reset_visitor" -> {
                                     println("DEBUG: Resetting visitor ID")
                                     api.visitor_id = null
                                     ensureVisitorId()
                                 }
-                                "mobile_emulation", "aggressive_mobile", "desktop_fallback" -> {
-                                    // These strategies are handled by enhanced headers
-                                    println("DEBUG: Applying $strategy strategy with enhanced headers")
+                                "mobile_emulation", "aggressive_mobile" -> {
+                                    println("DEBUG: Applying $strategy strategy - switching to mobile API")
+                                    // Force mobile API context for this attempt
+                                    val tempVisitorId = api.visitor_id
+                                    api.visitor_id = null
+                                    try {
+                                        // Use mobile API for this attempt
+                                        mobileApi.visitor_id = visitorEndpoint.getVisitorId()
+                                        println("DEBUG: Mobile API initialized successfully")
+                                    } catch (e: Exception) {
+                                        println("DEBUG: Mobile API initialization failed: ${e.message}")
+                                        // Fall back to standard API
+                                        api.visitor_id = tempVisitorId
+                                    }
+                                }
+                                "desktop_fallback" -> {
+                                    println("DEBUG: Applying desktop fallback strategy")
+                                    // Ensure we're using standard API with desktop headers
+                                    api.user_auth_state = null
                                 }
                             }
                             
@@ -594,10 +632,21 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             // Get video with different parameters based on strategy
                             val useDifferentParams = strategy != "standard"
                             val currentVideoEndpoint = when (strategy) {
-                                "mobile_emulation", "aggressive_mobile" -> mobileVideoEndpoint
-                                "desktop_fallback" -> videoEndpoint  // Use standard API for desktop
-                                else -> videoEndpoint
+                                "mobile_emulation", "aggressive_mobile" -> {
+                                    println("DEBUG: Using mobile API endpoint for video retrieval")
+                                    mobileVideoEndpoint
+                                }
+                                "desktop_fallback" -> {
+                                    println("DEBUG: Using standard API endpoint for desktop fallback")
+                                    videoEndpoint
+                                }
+                                else -> {
+                                    println("DEBUG: Using standard API endpoint")
+                                    videoEndpoint
+                                }
                             }
+                            
+                            println("DEBUG: Getting video with useDifferentParams=$useDifferentParams")
                             val (video, _) = currentVideoEndpoint.getVideo(useDifferentParams, videoId)
                             
                             // Process formats based on user preferences and availability
@@ -785,6 +834,30 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             println("DEBUG: Audio attempt $attempt failed with strategy $strategy: ${e.message}")
                             if (is403Error) {
                                 println("DEBUG: Detected 403 error - applying aggressive recovery")
+                                
+                                // Immediate aggressive action for 403 errors
+                                when (attempt) {
+                                    1 -> {
+                                        println("DEBUG: Immediate visitor ID reset for 403 error")
+                                        api.visitor_id = null
+                                        ensureVisitorId()
+                                    }
+                                    2 -> {
+                                        println("DEBUG: Immediate cache reset for 403 error")
+                                        resetApiCache()
+                                    }
+                                    3 -> {
+                                        println("DEBUG: Immediate mobile API switch for 403 error")
+                                        val tempVisitorId = api.visitor_id
+                                        api.visitor_id = null
+                                        try {
+                                            mobileApi.visitor_id = visitorEndpoint.getVisitorId()
+                                        } catch (e: Exception) {
+                                            println("DEBUG: Mobile API switch failed: ${e.message}")
+                                            api.visitor_id = tempVisitorId
+                                        }
+                                    }
+                                }
                             }
                             
                             // Enhanced delay strategy for 403 errors and network restrictions
@@ -873,25 +946,53 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             val strategy = getStrategyForNetwork(attempt, networkType)
                             println("DEBUG: Using strategy: $strategy for $networkType")
                             
-                            // Apply strategy-specific settings
+                            // Apply strategy-specific settings BEFORE making the request
                             when (strategy) {
                                 "reset_visitor" -> {
                                     println("DEBUG: Resetting visitor ID")
                                     api.visitor_id = null
                                     ensureVisitorId()
                                 }
-                                "mobile_emulation", "aggressive_mobile", "desktop_fallback" -> {
-                                    println("DEBUG: Applying $strategy strategy with enhanced headers")
+                                "mobile_emulation", "aggressive_mobile" -> {
+                                    println("DEBUG: Applying $strategy strategy - switching to mobile API")
+                                    // Force mobile API context for this attempt
+                                    val tempVisitorId = api.visitor_id
+                                    api.visitor_id = null
+                                    try {
+                                        // Use mobile API for this attempt
+                                        mobileApi.visitor_id = visitorEndpoint.getVisitorId()
+                                        println("DEBUG: Mobile API initialized successfully")
+                                    } catch (e: Exception) {
+                                        println("DEBUG: Mobile API initialization failed: ${e.message}")
+                                        // Fall back to standard API
+                                        api.visitor_id = tempVisitorId
+                                    }
+                                }
+                                "desktop_fallback" -> {
+                                    println("DEBUG: Applying desktop fallback strategy")
+                                    // Ensure we're using standard API with desktop headers
+                                    api.user_auth_state = null
                                 }
                             }
                             
                             // Get video with different parameters based on strategy
                             val useDifferentParams = strategy != "standard"
                             val currentVideoEndpoint = when (strategy) {
-                                "mobile_emulation", "aggressive_mobile" -> mobileVideoEndpoint
-                                "desktop_fallback" -> videoEndpoint
-                                else -> videoEndpoint
+                                "mobile_emulation", "aggressive_mobile" -> {
+                                    println("DEBUG: Using mobile API endpoint for video retrieval")
+                                    mobileVideoEndpoint
+                                }
+                                "desktop_fallback" -> {
+                                    println("DEBUG: Using standard API endpoint for desktop fallback")
+                                    videoEndpoint
+                                }
+                                else -> {
+                                    println("DEBUG: Using standard API endpoint")
+                                    videoEndpoint
+                                }
                             }
+                            
+                            println("DEBUG: Getting video with useDifferentParams=$useDifferentParams")
                             val (video, _) = currentVideoEndpoint.getVideo(useDifferentParams, videoId)
                             
                             // Check if we have MPD support first (preferred for video)
@@ -1031,6 +1132,30 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             println("DEBUG: Video attempt $attempt failed with strategy $strategy: ${e.message}")
                             if (is403Error) {
                                 println("DEBUG: Detected 403 error in video streaming - applying aggressive recovery")
+                                
+                                // Immediate aggressive action for 403 errors
+                                when (attempt) {
+                                    1 -> {
+                                        println("DEBUG: Immediate visitor ID reset for video 403 error")
+                                        api.visitor_id = null
+                                        ensureVisitorId()
+                                    }
+                                    2 -> {
+                                        println("DEBUG: Immediate cache reset for video 403 error")
+                                        resetApiCache()
+                                    }
+                                    3 -> {
+                                        println("DEBUG: Immediate mobile API switch for video 403 error")
+                                        val tempVisitorId = api.visitor_id
+                                        api.visitor_id = null
+                                        try {
+                                            mobileApi.visitor_id = visitorEndpoint.getVisitorId()
+                                        } catch (e: Exception) {
+                                            println("DEBUG: Mobile API switch failed: ${e.message}")
+                                            api.visitor_id = tempVisitorId
+                                        }
+                                    }
+                                }
                             }
                             
                             // Enhanced delay strategy for 403 errors and network restrictions (same as audio)
@@ -1239,7 +1364,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     
     /**
      * Reset API cache and clear stored data to simulate fresh request
-     * This helps bypass 403 errors by making YouTube think it's a new request
+     * Enhanced to be more aggressive for 403 error recovery
      */
     private suspend fun resetApiCache() {
         try {
@@ -1251,13 +1376,34 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             // Clear any cached authentication state
             api.user_auth_state = null
             
-            // Force re-initialization of visitor ID
-            ensureVisitorId()
+            // Also reset mobile API cache
+            mobileApi.visitor_id = null
+            mobileApi.user_auth_state = null
+            
+            // Force re-initialization of visitor ID with multiple attempts
+            var visitorResetSuccess = false
+            for (resetAttempt in 1..3) {
+                try {
+                    println("DEBUG: Visitor ID reset attempt $resetAttempt")
+                    ensureVisitorId()
+                    visitorResetSuccess = true
+                    break
+                } catch (e: Exception) {
+                    println("DEBUG: Visitor ID reset attempt $resetAttempt failed: ${e.message}")
+                    kotlinx.coroutines.delay(200L * resetAttempt)
+                }
+            }
+            
+            if (!visitorResetSuccess) {
+                println("DEBUG: All visitor ID reset attempts failed, using random ID")
+                // Generate a random visitor ID as last resort
+                api.visitor_id = generateRandomPot()
+            }
             
             // Add a small delay to ensure cache is cleared
-            kotlinx.coroutines.delay(200L)
+            kotlinx.coroutines.delay(500L)
             
-            println("DEBUG: API cache reset completed")
+            println("DEBUG: API cache reset completed successfully")
         } catch (e: Exception) {
             println("DEBUG: Failed to reset API cache: ${e.message}")
             // Continue even if cache reset fails
