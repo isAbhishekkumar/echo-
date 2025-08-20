@@ -707,19 +707,18 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 val originalUrl = format.url ?: return@forEach
                 val itag = format.itag ?: 0
                 
-                when {
-                    // Standard audio formats using itag codes
-                    itag in listOf<Int>(139, 140, 141, 171, 249, 250, 251) -> {
+                when (itag) {
+                        139, 140, 141, 171, 249, 250, 251 -> {
                         val qualityValue = format.bitrate?.toInt() ?: when (itag) {
-                            139 -> 48000    // 48k AAC HEv1
-                            140 -> 128000   // 128k AAC LC
-                            141 -> 256000   // 256k AAC LC (Premium)
-                            171 -> 128000   // 128k Vorbis
-                            249 -> 50000    // 50k Opus
-                            250 -> 70000    // 70k Opus
-                            251 -> 160000   // 160k Opus
-                            else -> 192000
-                        }.toInt()
+                            139 -> 48000.toInt()    // 48k AAC HEv1
+                            140 -> 128000.toInt()   // 128k AAC LC
+                            141 -> 256000.toInt()   // 256k AAC LC (Premium)
+                            171 -> 128000.toInt()   // 128k Vorbis
+                            249 -> 50000.toInt()    // 50k Opus
+                            250 -> 70000.toInt()    // 70k Opus
+                            251 -> 160000.toInt()   // 160k Opus
+                            else -> 192000.toInt()
+                        }
                         val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
                         
                         val audioSource = createQualityAdaptiveSource(
@@ -733,21 +732,21 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     }
                     
                     // Surround and special audio formats
-                    itag in listOf<Int>(256, 258, 325, 327, 328, 338, 380, 599, 600, 773, 774) -> {
+                    256, 258, 325, 327, 328, 338, 380, 599, 600, 773, 774 -> {
                         val qualityValue = format.bitrate?.toInt() ?: when (itag) {
-                            256 -> 192000   // AAC 5.1 192k
-                            258 -> 384000   // AAC 5.1 384k
-                            325 -> 384000   // DTSE 5.1 384k
-                            327 -> 256000   // AAC 5.1 256k
-                            328 -> 384000   // EAC3 5.1 384k
-                            338 -> 480000   // Opus Ambisonic ~480k
-                            380 -> 384000   // AC3 5.1 384k
-                            599 -> 30000    // AAC HEv1 30k (discontinued)
-                            600 -> 35000    // Opus 35k (discontinued)
-                            773 -> 900000   // IAMF/Opus Binaural ~900k
-                            774 -> 256000   // Opus Stereo 256k (YT Music Premium)
-                            else -> 192000
-                        }.toInt()
+                            256 -> 192000.toInt()   // AAC 5.1 192k
+                            258 -> 384000.toInt()   // AAC 5.1 384k
+                            325 -> 384000.toInt()   // DTSE 5.1 384k
+                            327 -> 256000.toInt()   // AAC 5.1 256k
+                            328 -> 384000.toInt()   // EAC3 5.1 384k
+                            338 -> 480000.toInt()   // Opus Ambisonic ~480k
+                            380 -> 384000.toInt()   // AC3 5.1 384k
+                            599 -> 30000.toInt()    // AAC HEv1 30k (discontinued)
+                            600 -> 35000.toInt()    // Opus 35k (discontinued)
+                            773 -> 900000.toInt()   // IAMF/Opus Binaural ~900k
+                            774 -> 256000.toInt()   // Opus Stereo 256k (YT Music Premium)
+                            else -> 192000.toInt()
+                        }
                         val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
                         
                         val audioSource = createQualityAdaptiveSource(
@@ -776,18 +775,18 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     }
                     
                     // Standard video formats using itag codes
-                    itag in listOf<Int>(133, 134, 135, 136, 137, 138, 160, 264, 266, 298, 299) -> {
+                    133, 134, 135, 136, 137, 138, 160, 264, 266, 298, 299 -> {
                         val qualityValue = format.bitrate?.toInt() ?: when (itag) {
-                            133, 160 -> 300000    // 144p/240p H.264
-                            134 -> 500000        // 360p H.264
-                            135 -> 1000000       // 480p H.264
-                            136 -> 2000000       // 720p H.264
-                            137, 264 -> 4000000  // 1080p/1440p H.264
-                            138, 266 -> 8000000  // 2160p/2160p60 H.264
-                            298 -> 3000000       // 720p60 H.264
-                            299 -> 6000000       // 1080p60 H.264
-                            else -> 500000
-                        }.toInt()
+                            133, 160 -> 300000.toInt()    // 144p/240p H.264
+                            134 -> 500000.toInt()        // 360p H.264
+                            135 -> 1000000.toInt()       // 480p H.264
+                            136 -> 2000000.toInt()       // 720p H.264
+                            137, 264 -> 4000000.toInt()  // 1080p/1440p H.264
+                            138, 266 -> 8000000.toInt()  // 2160p/2160p60 H.264
+                            298 -> 3000000.toInt()       // 720p60 H.264
+                            299 -> 6000000.toInt()       // 1080p60 H.264
+                            else -> 500000.toInt()
+                        }
                         val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
                         
                         val videoSource = createQualityAdaptiveSource(
@@ -801,24 +800,24 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     }
                     
                     // VP9 video formats
-                    itag in listOf<Int>(242, 243, 244, 245, 246, 247, 248, 271, 272, 278, 302, 303, 308, 313, 315) -> {
+                    242, 243, 244, 245, 246, 247, 248, 271, 272, 278, 302, 303, 308, 313, 315 -> {
                         val qualityValue = format.bitrate?.toInt() ?: when (itag) {
-                            242 -> 250000        // 240p VP9
-                            243 -> 500000        // 360p VP9
-                            244 -> 1000000       // 480p VP9
-                            245, 246 -> 1500000  // 480p VP9 (multiple variants)
-                            247 -> 2000000       // 720p VP9
-                            248 -> 3000000       // 1080p VP9
-                            271 -> 5000000       // 1440p VP9
-                            272 -> 15000000      // 4320p VP9
-                            278 -> 100000        // 144p VP9 (alternative)
-                            302 -> 2500000       // 720p60 VP9
-                            303 -> 5000000       // 1080p60 VP9
-                            308 -> 8000000       // 1440p60 VP9
-                            313 -> 20000000      // 2160p VP9
-                            315 -> 35000000      // 2160p60 VP9
-                            else -> 1000000
-                        }.toInt()
+                            242 -> 250000.toInt()        // 240p VP9
+                            243 -> 500000.toInt()        // 360p VP9
+                            244 -> 1000000.toInt()       // 480p VP9
+                            245, 246 -> 1500000.toInt()  // 480p VP9 (multiple variants)
+                            247 -> 2000000.toInt()       // 720p VP9
+                            248 -> 3000000.toInt()       // 1080p VP9
+                            271 -> 5000000.toInt()       // 1440p VP9
+                            272 -> 15000000.toInt()      // 4320p VP9
+                            278 -> 100000.toInt()        // 144p VP9 (alternative)
+                            302 -> 2500000.toInt()       // 720p60 VP9
+                            303 -> 5000000.toInt()       // 1080p60 VP9
+                            308 -> 8000000.toInt()       // 1440p60 VP9
+                            313 -> 20000000.toInt()      // 2160p VP9
+                            315 -> 35000000.toInt()      // 2160p60 VP9
+                            else -> 1000000.toInt()
+                        }
                         val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
                         
                         val videoSource = createQualityAdaptiveSource(
@@ -832,19 +831,19 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     }
                     
                     // AV1 video formats
-                    itag in listOf<Int>(394, 395, 396, 397, 398, 399, 400, 694, 695, 696, 697, 698, 699, 700, 701, 702) -> {
+                    394, 395, 396, 397, 398, 399, 400, 694, 695, 696, 697, 698, 699, 700, 701, 702 -> {
                         val qualityValue = format.bitrate?.toInt() ?: when (itag) {
-                            394, 694 -> 100000    // 144p AV1
-                            395, 695 -> 200000    // 240p AV1
-                            396, 696 -> 400000    // 360p AV1
-                            397, 697 -> 800000    // 480p AV1
-                            398, 698 -> 1500000   // 720p AV1
-                            399, 699 -> 3000000   // 1080p AV1
-                            400, 700 -> 5000000   // 1440p AV1
-                            701 -> 8000000       // 2160p AV1
-                            702 -> 12000000      // 4320p AV1
-                            else -> 2000000
-                        }.toInt()
+                            394, 694 -> 100000.toInt()    // 144p AV1
+                            395, 695 -> 200000.toInt()    // 240p AV1
+                            396, 696 -> 400000.toInt()    // 360p AV1
+                            397, 697 -> 800000.toInt()    // 480p AV1
+                            398, 698 -> 1500000.toInt()   // 720p AV1
+                            399, 699 -> 3000000.toInt()   // 1080p AV1
+                            400, 700 -> 5000000.toInt()   // 1440p AV1
+                            701 -> 8000000.toInt()       // 2160p AV1
+                            702 -> 12000000.toInt()      // 4320p AV1
+                            else -> 2000000.toInt()
+                        }
                         val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
                         
                         val videoSource = createQualityAdaptiveSource(
@@ -1044,11 +1043,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 // Categorize formats by type using comprehensive itag codes
                                 val isAudioFormat = when (itag) {
                                     // Standard DASH audio itags
-                                    in listOf<Int>(139, 140, 141, 171, 249, 250, 251) -> true
+                                    139, 140, 141, 171, 249, 250, 251 -> true
                                     // Surround audio itags (rare)
-                                    in listOf<Int>(256, 258, 327, 328, 380) -> true
+                                    256, 258, 327, 328, 380 -> true
                                     // Special audio formats
-                                    in listOf<Int>(325, 338, 599, 600, 773, 774) -> true
+                                    325, 338, 599, 600, 773, 774 -> true
                                     // Also check mime type as fallback
                                     else -> when {
                                         mimeType.contains("audio/mp4") && !mimeType.contains("video") -> true
@@ -1060,15 +1059,15 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 
                                 val isVideoFormat = when (itag) {
                                     // Standard DASH video itags (MP4/H.264)
-                                    in listOf<Int>(133, 134, 135, 136, 137, 138, 160, 264, 266, 298, 299) -> true
+                                    133, 134, 135, 136, 137, 138, 160, 264, 266, 298, 299 -> true
                                     // VP9 video itags
-                                    in listOf<Int>(242, 243, 244, 245, 246, 247, 248, 271, 272, 278, 298, 299, 302, 303, 308, 313, 315) -> true
+                                    242, 243, 244, 245, 246, 247, 248, 271, 272, 278, 298, 299, 302, 303, 308, 313, 315 -> true
                                     // AV1 video itags
-                                    in listOf<Int>(394, 395, 396, 397, 398, 399, 400, 694, 695, 696, 697, 698, 699, 700, 701, 702) -> true
+                                    394, 395, 396, 397, 398, 399, 400, 694, 695, 696, 697, 698, 699, 700, 701, 702 -> true
                                     // Rare/legacy video formats
-                                    in listOf<Int>(5, 6, 17, 18, 22, 34, 35, 36, 37, 38, 43, 44, 45, 46) -> true
+                                    5, 6, 17, 18, 22, 34, 35, 36, 37, 38, 43, 44, 45, 46 -> true
                                     // Extra rare formats
-                                    in listOf<Int>(228, 779, 780, 788) -> true
+                                    228, 779, 780, 788 -> true
                                     else -> when {
                                         mimeType.contains("video/mp4") && !mimeType.contains("audio") -> true
                                         mimeType.contains("video/webm") && !mimeType.contains("audio") -> true
@@ -1078,11 +1077,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 
                                 val isCombinedFormat = when (itag) {
                                     // Legacy combined formats
-                                    in listOf<Int>(5, 6, 17, 18, 22, 34, 35, 36, 37, 38) -> true
+                                    5, 6, 17, 18, 22, 34, 35, 36, 37, 38 -> true
                                     // 3D combined formats
-                                    in listOf<Int>(82, 83, 84, 85) -> true
+                                    82, 83, 84, 85 -> true
                                     // HLS combined formats
-                                    in listOf<Int>(91, 92, 93, 94, 95, 96, 132, 151, 300, 301) -> true
+                                    91, 92, 93, 94, 95, 96, 132, 151, 300, 301 -> true
                                     else -> when {
                                         mimeType.contains("video/mp4") && mimeType.contains("audio") -> true
                                         mimeType.contains("video/webm") && mimeType.contains("audio") -> true
@@ -1458,18 +1457,18 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 
                                 if (!mimeType.contains("audio")) return@forEach
                                 
-                                val qualityValue: Int = when {
+                                val qualityValue: Int = when (itag) {
                                     // Use itag codes for precise quality identification
-                                    itag in listOf<Int>(139, 140, 141, 171, 249, 250, 251) -> when (itag) {
-                                        139 -> 48000    // 48k
-                                        140 -> 128000   // 128k
-                                        141 -> 256000   // 256k
-                                        171 -> 128000   // 128k
-                                        249 -> 50000    // 50k
-                                        250 -> 70000    // 70k
-                                        251 -> 160000   // 160k
-                                        else -> 192000
-                                    }.toInt()
+                                    139, 140, 141, 171, 249, 250, 251 -> when (itag) {
+                                        139 -> 48000.toInt()    // 48k
+                                        140 -> 128000.toInt()   // 128k
+                                        141 -> 256000.toInt()   // 256k
+                                        171 -> 128000.toInt()   // 128k
+                                        249 -> 50000.toInt()    // 50k
+                                        250 -> 70000.toInt()    // 70k
+                                        251 -> 160000.toInt()   // 160k
+                                        else -> 192000.toInt()
+                                    }
                                     format.bitrate != null && format.bitrate > 0 -> {
                                         val baseBitrate = format.bitrate.toInt()
                                         when (networkType) {
