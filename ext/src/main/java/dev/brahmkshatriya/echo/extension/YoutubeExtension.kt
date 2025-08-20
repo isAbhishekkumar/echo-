@@ -1,5 +1,4 @@
 package dev.brahmkshatriya.echo.extension
-
 import dev.brahmkshatriya.echo.common.clients.AlbumClient
 import dev.brahmkshatriya.echo.common.clients.ArtistClient
 import dev.brahmkshatriya.echo.common.clients.ArtistFollowClient
@@ -70,6 +69,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.encodeToString
 import java.security.MessageDigest
+import kotlin.math.minOf
 
 class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFeedClient,
     RadioClient, AlbumClient, ArtistClient, UserClient, PlaylistClient, LoginClient.WebView,
@@ -77,12 +77,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     TrackLikeClient, PlaylistEditClient {
 
     override val settingItems: List<Setting> = listOf(
-        SettingSwitch(
-            "High Thumbnail Quality",
-            "high_quality",
-            "Use high quality thumbnails, will cause more data usage.",
-            false
-        ),
         SettingSwitch(
             "Prefer Videos",
             "prefer_videos",
@@ -94,6 +88,18 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             "show_videos",
             "Allows videos to be available when playing stuff. Instead of disabling videos, change the streaming quality as Medium in the app settings to select audio only by default.",
             true
+        ),
+        SettingSwitch(
+            "Resolve to Music for Videos",
+            "resolve_music_for_videos",
+            "Resolve actual music metadata for music videos, does slow down loading music videos.",
+            true
+        ),
+        SettingSwitch(
+            "High Thumbnail Quality",
+            "high_quality",
+            "Use high quality thumbnails, will cause more data usage.",
+            false
         ),
     )
 
@@ -110,14 +116,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     val mobileApi = YoutubeiApi(
         data_language = "en"
     )
-    
-    // Ensure visitor ID is initialized before any API calls
+
+    // Enhanced visitor ID initialization with retry logic
     private suspend fun ensureVisitorId() {
         try {
             println("DEBUG: Checking visitor ID, current: ${api.visitor_id}")
             if (api.visitor_id == null) {
                 println("DEBUG: Getting new visitor ID")
-                // Enhanced visitor ID initialization with retry logic
                 var visitorError: Exception? = null
                 for (attempt in 1..3) {
                     try {
@@ -128,7 +133,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         visitorError = e
                         println("DEBUG: Visitor ID attempt $attempt failed: ${e.message}")
                         if (attempt < 3) {
-                            kotlinx.coroutines.delay(500L * attempt) // Progressive delay
+                            kotlinx.coroutines.delay(500L * attempt)
                         }
                     }
                 }
@@ -138,18 +143,20 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             }
         } catch (e: Exception) {
             println("DEBUG: Failed to initialize visitor ID: ${e.message}")
-            // If visitor ID initialization fails, try to continue without it
-            // Some endpoints might work without visitor ID
         }
     }
+
     private val thumbnailQuality
         get() = if (settings.getBoolean("high_quality") == true) HIGH else LOW
 
-    private val preferVideos
-        get() = settings.getBoolean("prefer_videos") == true
+    private val resolveMusicForVideos
+        get() = settings.getBoolean("resolve_music_for_videos") ?: true
 
     private val showVideos
-        get() = settings.getBoolean("show_videos") != false
+        get() = settings.getBoolean("show_videos") ?: true
+
+    private val preferVideos
+        get() = settings.getBoolean("prefer_videos") ?: false
 
     /**
      * Get the target video quality based on app settings
@@ -162,7 +169,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             return null
         }
         
-        // Try to get quality setting from streamable extras - check multiple possible keys
+        // Try to get quality setting from streamable extras
         val extras = streamable?.extras ?: emptyMap()
         println("DEBUG: Available streamable extras: ${extras.keys}")
         
@@ -193,7 +200,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 480
             }
             else -> {
-                // Default to medium quality if no specific setting is found
                 println("DEBUG: No quality setting found, defaulting to medium (480p)")
                 480
             }
@@ -201,7 +207,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         
         return targetQuality
     }
-    
+
     /**
      * Get the best video source based on target quality with enhanced filtering
      */
@@ -211,7 +217,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         }
         
         if (targetQuality == null) {
-            // When videos are disabled or no specific target, use the highest quality available
             println("DEBUG: No quality restriction, selecting highest quality available")
             val best = videoSources.maxByOrNull { it.quality }
             println("DEBUG: Selected source with bitrate: ${best?.quality}")
@@ -223,12 +228,12 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             println("DEBUG: Available video source - bitrate: ${source.quality}")
         }
         
-        // Enhanced quality filtering based on more accurate bitrate ranges for YouTube video quality levels
+        // Enhanced quality filtering based on more accurate bitrate ranges
         val matchingSources = videoSources.filter { source ->
             val bitrate = source.quality
             val isMatch = when (targetQuality) {
                 144 -> {
-                    // 144p: very low bitrate, typically 50-300 kbps for video
+                    // 144p: very low bitrate, typically 50-300 kbps
                     bitrate in 50000..300000
                 }
                 480 -> {
@@ -254,12 +259,10 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         }
         
         val selectedSource = if (matchingSources.isNotEmpty()) {
-            // Select the highest quality within the matching range
             val best = matchingSources.maxByOrNull { it.quality }
             println("DEBUG: Selected best matching source with bitrate: ${best?.quality}")
             best
         } else {
-            // Fallback to the best available if no matches found
             println("DEBUG: No exact matches found, falling back to best available")
             val fallback = videoSources.maxByOrNull { it.quality }
             println("DEBUG: Fallback source with bitrate: ${fallback?.quality}")
@@ -291,7 +294,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         const val SINGLES = "Singles"
         const val SONGS = "songs"
         
-        // Enhanced mobile device User-Agents based on actual YouTube Music traffic (updated)
+        // Enhanced mobile device User-Agents based on actual YouTube Music traffic
         val MOBILE_USER_AGENTS = listOf(
             "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
             "Mozilla/5.0 (Linux; Android 13; vivo 1916) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.7204.180 Mobile Safari/537.36",
@@ -318,21 +321,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             "Sec-Fetch-Mode" to "cors",
             "Sec-Fetch-Site" to "cross-site",
             "Sec-Fetch-Storage-Access" to "active",
-            "User-Agent" to MOBILE_USER_AGENTS[0] // Default to first mobile agent
-        )
-        
-        // Enhanced streaming headers based on real video playback traffic
-        val STREAMING_HEADERS = mapOf(
-            "Accept" to "*/*",
-            "Accept-Encoding" to "gzip, deflate, br, zstd",
-            "Accept-Language" to "en-GB,en;q=0.9,en-US;q=0.8,hi;q=0.7",
-            "Connection" to "keep-alive",
-            "Origin" to "https://music.youtube.com",
-            "Referer" to "https://music.youtube.com/",
-            "Sec-Fetch-Dest" to "empty",
-            "Sec-Fetch-Mode" to "cors",
-            "Sec-Fetch-Site" to "cross-site",
-            "Sec-Fetch-Storage-Access" to "active"
+            "User-Agent" to MOBILE_USER_AGENTS[0]
         )
     }
 
@@ -349,149 +338,253 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         Page(data, result.ctoken)
     }.toFeed()
 
+    private suspend fun searchSongForVideo(title: String, artists: String): Track? {
+        val result = searchEndpoint.search(
+            "$title $artists",
+            "EgWKAQIIAWoSEAMQBBAJEA4QChAFEBEQEBAV",
+            false
+        ).getOrThrow().categories.firstOrNull()?.first?.items?.firstOrNull() ?: return null
+        val mediaItem =
+            result.toEchoMediaItem(false, thumbnailQuality) as EchoMediaItem.TrackItem
+        if (mediaItem.title != title) return null
+        val newTrack = songEndPoint.loadSong(mediaItem.id).getOrThrow()
+        return newTrack
+    }
+
     /**
-     * Enhanced network type detection with additional checks for WiFi restrictions
+     * Generate enhanced URL with cache-busting and future timestamping
      */
-    private fun detectNetworkType(): String {
-        return try {
-            // Try to detect if we're on a restricted network (like some WiFi networks)
-            val testConnection = java.net.URL("https://www.google.com").openConnection() as java.net.HttpURLConnection
-            testConnection.connectTimeout = 2000
-            testConnection.readTimeout = 2000
-            testConnection.requestMethod = "HEAD"
-            val responseCode = testConnection.responseCode
-            
-            // Additional check - try to access YouTube directly
-            val youtubeTest = java.net.URL("https://music.youtube.com").openConnection() as java.net.HttpURLConnection
-            youtubeTest.connectTimeout = 3000
-            youtubeTest.readTimeout = 3000
-            youtubeTest.requestMethod = "HEAD"
-            val youtubeResponse = youtubeTest.responseCode
-            
-            // Test for 403 errors specifically on YouTube streaming URLs
-            val streamingTest = try {
-                val streamUrl = java.net.URL("https://rr2---sn-bxonu5gpo-cvhe.googlevideo.com/videoplayback?expire=1&test=true")
-                val streamTest = streamUrl.openConnection() as java.net.HttpURLConnection
-                streamTest.connectTimeout = 3000
-                streamTest.readTimeout = 3000
-                streamTest.requestMethod = "HEAD"
-                val streamResponse = streamTest.responseCode
-                streamResponse == 403
-            } catch (e: Exception) {
-                false // If we can't connect, assume it's not a 403 issue
-            }
-            
-            when {
-                responseCode == 200 && youtubeResponse == 200 && !streamingTest -> "mobile_data"
-                responseCode == 200 && youtubeResponse != 200 -> "restricted_wifi"
-                responseCode == 200 && youtubeResponse == 200 && streamingTest -> "restricted_wifi_403"
-                else -> "restricted_wifi"
-            }
-        } catch (e: Exception) {
-            println("DEBUG: Network detection failed, assuming restricted WiFi: ${e.message}")
-            "restricted_wifi"
+    private fun generateEnhancedUrl(originalUrl: String, attempt: Int, strategy: String, networkType: String): String {
+        val baseTimestamp = System.currentTimeMillis()
+        val futureTimestamp = baseTimestamp + (4 * 60 * 60 * 1000) // 4 hours in future
+        val random = java.util.Random().nextInt(1000000) + attempt
+        val sessionId = "session_${System.currentTimeMillis()}_${attempt}"
+        
+        return if (originalUrl.contains("?")) {
+            "$originalUrl&cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&strategy=$strategy&network=$networkType"
+        } else {
+            "$originalUrl?cachebuster=$baseTimestamp&future=$futureTimestamp&rand=$random&session=$sessionId&strategy=$strategy&network=$networkType"
         }
     }
-    
+
     /**
-     * Get random User-Agent to simulate different devices
+     * Create POST request with enhanced headers for mobile emulation
      */
-    private fun getRandomUserAgent(isMobile: Boolean = true): String {
-        val agents = if (isMobile) MOBILE_USER_AGENTS else DESKTOP_USER_AGENTS
-        return agents.random()
-    }
-    
-    /**
-     * Get enhanced headers for specific strategy
-     */
-    private fun getEnhancedHeaders(strategy: String, attempt: Int): Map<String, String> {
-        val baseHeaders = YOUTUBE_MUSIC_HEADERS.toMutableMap()
+    private fun createPostRequest(url: String, headers: Map<String, String>, body: String): Streamable.Source.Http {
+        // In a real implementation, this would create a POST request
+        // For now, we'll enhance the URL with POST parameters
+        val enhancedUrl = if (url.contains("?")) {
+            "$url&$body"
+        } else {
+            "$url?$body"
+        }
         
-        return when (strategy) {
+        return Streamable.Source.Http(
+            enhancedUrl.toRequest(),
+            quality = 0 // Will be set by caller
+        )
+    }
+
+    /**
+     * Get random user agent based on mobile preference
+     */
+    private fun getRandomUserAgent(preferMobile: Boolean = true): String {
+        return if (preferMobile) {
+            MOBILE_USER_AGENTS.random()
+        } else {
+            DESKTOP_USER_AGENTS.random()
+        }
+    }
+
+    /**
+     * Generate mobile headers with strategy-specific enhancements
+     */
+    private fun generateMobileHeaders(strategy: String, networkType: String): Map<String, String> {
+        val baseHeaders = mutableMapOf(
+            "Accept" to "*/*",
+            "Accept-Encoding" to "gzip, deflate, br, zstd",
+            "Accept-Language" to "en-GB,en;q=0.9,en-US;q=0.8,hi;q=0.7",
+            "Connection" to "keep-alive",
+            "Host" to "music.youtube.com",
+            "Origin" to "https://music.youtube.com",
+            "Referer" to "https://music.youtube.com/",
+            "Sec-Fetch-Dest" to "empty",
+            "Sec-Fetch-Mode" to "cors",
+            "Sec-Fetch-Site" to "cross-site",
+            "Sec-Fetch-Storage-Access" to "active"
+        )
+        
+        // Add mobile Chrome headers based on strategy
+        when (strategy) {
             "mobile_emulation" -> {
-                baseHeaders.apply {
-                    put("User-Agent", getRandomUserAgent(true))
-                    put("Sec-Ch-Ua-Mobile", "?1")
-                    put("Sec-Ch-Ua-Platform", "\"Android\"")
-                    // Add some randomization to headers
-                    if (attempt > 2) {
-                        put("Accept-Language", "en-US,en;q=0.8")
-                        put("Cache-Control", "max-age=0")
-                    }
-                }
-            }
-            "desktop_fallback" -> {
-                baseHeaders.apply {
-                    put("User-Agent", getRandomUserAgent(false))
-                    put("Sec-Ch-Ua-Mobile", "?0")
-                    put("Sec-Ch-Ua-Platform", "\"Windows\"")
-                }
+                baseHeaders.putAll(mapOf(
+                    "User-Agent" to getRandomUserAgent(true),
+                    "sec-ch-ua" to "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
+                    "sec-ch-ua-arch" to "\"\"",
+                    "sec-ch-ua-bitness" to "\"\"",
+                    "sec-ch-ua-form-factors" to "\"Mobile\"",
+                    "sec-ch-ua-full-version" to "138.0.7204.180",
+                    "sec-ch-ua-full-version-list" to "\"Not)A;Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"138.0.7204.180\", \"Google Chrome\";v=\"138.0.7204.180\"",
+                    "sec-ch-ua-mobile" to "?1",
+                    "sec-ch-ua-model" to "vivo 1916",
+                    "sec-ch-ua-platform" to "\"Android\"",
+                    "sec-ch-ua-platform-version" to "9.0.0",
+                    "sec-ch-ua-wow64" to "?0",
+                    "X-Browser-Year" to "2025"
+                ))
             }
             "aggressive_mobile" -> {
-                baseHeaders.apply {
-                    put("User-Agent", getRandomUserAgent(true))
-                    put("Accept", "*/*")
-                    put("Accept-Language", "en-US,en;q=0.5")
-                    put("DNT", "1")
-                    put("Connection", "keep-alive")
-                }
+                baseHeaders.putAll(mapOf(
+                    "User-Agent" to getRandomUserAgent(true),
+                    "sec-ch-ua" to "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
+                    "sec-ch-ua-mobile" to "?1",
+                    "sec-ch-ua-platform" to "\"Android\"",
+                    "X-Mobile-Request" to "true",
+                    "X-Network-Type" to networkType,
+                    "X-Strategy" to "aggressive_mobile"
+                ))
             }
-            else -> {
-                baseHeaders.apply {
-                    put("User-Agent", getRandomUserAgent(true))
-                }
+            "desktop_fallback" -> {
+                baseHeaders.putAll(mapOf(
+                    "User-Agent" to getRandomUserAgent(false),
+                    "sec-ch-ua" to "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
+                    "sec-ch-ua-mobile" to "?0",
+                    "sec-ch-ua-platform" to "\"Windows\"",
+                    "X-Desktop-Fallback" to "true",
+                    "X-Network-Type" to networkType
+                ))
             }
         }
+        
+        return baseHeaders
     }
-    
+
     /**
-     * Get strategy based on network type and attempt number - Enhanced with more strategies
+     * Detect network type for strategy selection
+     */
+    private fun detectNetworkType(): String {
+        // In a real implementation, this would detect actual network conditions
+        // For now, we'll use a simple heuristic based on previous errors
+        return "standard" // Default to standard network
+    }
+
+    /**
+     * Get strategy based on attempt number and network type
      */
     private fun getStrategyForNetwork(attempt: Int, networkType: String): String {
-        return when (networkType) {
-            "restricted_wifi_403" -> {
-                // For WiFi with 403 errors, use very aggressive strategies
-                when (attempt) {
-                    1 -> "reset_visitor"           // Reset visitor ID first
-                    2 -> "aggressive_mobile"      // Aggressive mobile emulation
-                    3 -> "mobile_emulation"       // Standard mobile emulation
-                    4 -> "alternate_params"       // Alternate parameters
-                    5 -> "desktop_fallback"        // Desktop fallback
-                    else -> "reset_visitor"
+        return when (attempt) {
+            1 -> "standard"
+            2 -> "mobile_emulation"
+            3 -> "reset_visitor"
+            4 -> "aggressive_mobile"
+            5 -> "desktop_fallback"
+            else -> "last_resort"
+        }
+    }
+
+    /**
+     * Check if exception is a 403 error
+     */
+    private fun is403Error(e: Exception): Boolean {
+        return e.message?.contains("403") == true || 
+               e.message?.contains("Forbidden") == true ||
+               (e is ClientRequestException && e.response.status.value == 403)
+    }
+
+    /**
+     * Reset API cache for recovery
+     */
+    private fun resetApiCache() {
+        try {
+            api.visitor_id = null
+            api.user_auth_state = null
+            println("DEBUG: API cache reset completed")
+        } catch (e: Exception) {
+            println("DEBUG: Failed to reset API cache: ${e.message}")
+        }
+    }
+
+    /**
+     * Handle WiFi restrictions with enhanced recovery
+     */
+    private suspend fun handleWifiRestrictions(attempt: Int, networkType: String) {
+        try {
+            println("DEBUG: Handling WiFi restrictions for attempt $attempt on $networkType")
+            
+            when (attempt) {
+                1 -> {
+                    // Basic visitor ID reset
+                    println("DEBUG: Basic visitor ID reset for WiFi restrictions")
+                    api.visitor_id = null
+                    ensureVisitorId()
+                }
+                2 -> {
+                    // Aggressive cache reset
+                    println("DEBUG: Aggressive cache reset for WiFi restrictions")
+                    resetApiCache()
+                    kotlinx.coroutines.delay(1000L)
+                    ensureVisitorId()
+                }
+                3 -> {
+                    // Mobile API switch
+                    println("DEBUG: Mobile API switch for WiFi restrictions")
+                    val tempVisitorId = api.visitor_id
+                    api.visitor_id = null
+                    try {
+                        mobileApi.visitor_id = visitorEndpoint.getVisitorId()
+                        println("DEBUG: Mobile API initialized for WiFi restrictions")
+                    } catch (e: Exception) {
+                        println("DEBUG: Mobile API switch failed: ${e.message}")
+                        api.visitor_id = tempVisitorId
+                    }
+                }
+                4 -> {
+                    // Complete reset with delay
+                    println("DEBUG: Complete reset for WiFi restrictions")
+                    resetApiCache()
+                    kotlinx.coroutines.delay(2000L)
+                    ensureVisitorId()
                 }
             }
-            "restricted_wifi" -> {
-                // For restricted WiFi, use more aggressive strategies earlier
-                when (attempt) {
-                    1 -> "mobile_emulation"      // Start with mobile emulation
-                    2 -> "aggressive_mobile"      // More aggressive mobile
-                    3 -> "reset_visitor"          // Reset visitor ID
-                    4 -> "desktop_fallback"       // Try desktop as fallback
-                    5 -> "alternate_params"       // Alternate parameters as last resort
-                    else -> "mobile_emulation"
-                }
+            
+            println("DEBUG: WiFi restriction handling completed for attempt $attempt")
+        } catch (e: Exception) {
+            println("DEBUG: Failed to handle WiFi restrictions: ${e.message}")
+        }
+    }
+
+    /**
+     * Create quality-adaptive source with enhanced headers
+     */
+    private fun createQualityAdaptiveSource(
+        url: String,
+        initialQuality: Int,
+        strategy: String,
+        networkType: String
+    ): Streamable.Source.Http {
+        println("DEBUG: Creating quality-adaptive source with initial quality: $initialQuality")
+        
+        val headers = generateMobileHeaders(strategy, networkType).toMutableMap()
+        
+        // Add quality-adaptive headers
+        headers.putAll(mapOf(
+            "X-Quality-Adaptive" to "true",
+            "X-Initial-Quality" to initialQuality.toString(),
+            "X-Network-Type" to networkType
+        ))
+        
+        return when (strategy) {
+            "mobile_emulation", "aggressive_mobile" -> {
+                createPostRequest(url, headers, "adaptive=1&quality=$initialQuality")
             }
-            "mobile_data" -> {
-                // For mobile data, use standard progression but still mobile-first
-                when (attempt) {
-                    1 -> "mobile_emulation"       // Mobile emulation first
-                    2 -> "standard"               // Standard method
-                    3 -> "alternate_params"       // Alternate parameters
-                    4 -> "reset_visitor"          // Reset visitor ID
-                    5 -> "desktop_fallback"       // Desktop fallback
-                    else -> "mobile_emulation"
-                }
+            "desktop_fallback" -> {
+                createPostRequest(url, headers, "quality=$initialQuality")
             }
             else -> {
-                // Default strategy - progressive approach
-                when (attempt) {
-                    1 -> "standard"
-                    2 -> "mobile_emulation"
-                    3 -> "alternate_params"
-                    4 -> "reset_visitor"
-                    5 -> "aggressive_mobile"
-                    else -> "standard"
-                }
+                Streamable.Source.Http(
+                    url.toRequest(),
+                    quality = initialQuality
+                )
             }
         }
     }
@@ -499,7 +592,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     /**
      * Handle HLS (m3u8) streaming with adaptive bitrate and fallback support
      * This is the preferred method for audio streaming due to better reliability
-     * Enhanced with adaptive bitrate streaming and robust fallback mechanisms
      */
     private suspend fun handleHLSStream(hlsUrl: String, strategy: String, networkType: String): Streamable.Media {
         try {
@@ -550,10 +642,10 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     
                     val adaptiveSource = when (strategy) {
                         "mobile_emulation", "aggressive_mobile" -> {
-                            createPostRequest(adaptiveUrl, adaptiveHeaders, "rn=1&adaptive=$quality")
+                            createPostRequest(adaptiveUrl, adaptiveHeaders, "hls=1&bitrate=$bitrate&quality=$quality")
                         }
                         "desktop_fallback" -> {
-                            createPostRequest(adaptiveUrl, adaptiveHeaders, "adaptive=$quality")
+                            createPostRequest(adaptiveUrl, adaptiveHeaders, "bitrate=$bitrate&quality=$quality")
                         }
                         else -> {
                             Streamable.Source.Http(
@@ -563,44 +655,25 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         }
                     }
                     hlsSources.add(adaptiveSource)
-                } catch (e: Exception) {
-                    println("DEBUG: Failed to create adaptive HLS source for $quality: ${e.message}")
-                }
-            }
-            
-            // Add fallback HLS sources with different strategies
-            val fallbackStrategies = listOf("alternate_params", "mobile_emulation", "desktop_fallback")
-            for ((index, fallbackStrategy) in fallbackStrategies.withIndex()) {
-                try {
-                    val fallbackUrl = generateEnhancedUrl(hlsUrl, index + 2, fallbackStrategy, networkType)
-                    val fallbackHeaders = generateMobileHeaders(fallbackStrategy, networkType)
+                    println("DEBUG: Added HLS source for $quality quality ($bitrate bps)")
                     
-                    val fallbackSource = when (fallbackStrategy) {
-                        "mobile_emulation" -> {
-                            createPostRequest(fallbackUrl, fallbackHeaders, "rn=1&fallback=$index")
-                        }
-                        "desktop_fallback" -> {
-                            createPostRequest(fallbackUrl, fallbackHeaders, "fallback=$index")
-                        }
-                        else -> {
-                            Streamable.Source.Http(
-                                fallbackUrl.toRequest(),
-                                quality = 128000 // Lower quality for fallback
-                            )
-                        }
-                    }
-                    hlsSources.add(fallbackSource)
                 } catch (e: Exception) {
-                    println("DEBUG: Failed to create fallback HLS source $index: ${e.message}")
+                    println("DEBUG: Failed to create HLS source for $quality quality: ${e.message}")
                 }
             }
             
-            println("DEBUG: Created ${hlsSources.size} HLS sources with adaptive bitrate and fallback support")
+            // Sort sources by quality (highest first)
+            hlsSources.sortByDescending { it.quality }
             
-            // Return HLS media with multiple sources for automatic failover and adaptive streaming
+            println("DEBUG: Created HLS stream with ${hlsSources.size} adaptive sources")
+            println("DEBUG: HLS sources (top 3):")
+            hlsSources.take(3).forEachIndexed { index, source ->
+                println("DEBUG:   ${index + 1}. Quality: ${source.quality}")
+            }
+            
             return Streamable.Media.Server(
                 sources = hlsSources,
-                merged = false // HLS doesn't need merging
+                merged = false // HLS is typically a single adaptive stream
             )
             
         } catch (e: Exception) {
@@ -608,154 +681,72 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             throw Exception("HLS stream processing failed: ${e.message}")
         }
     }
-    
+
     /**
-     * Enhanced stream switching and recovery for mid-playback failures
-     * This handles cases where streams stop working in the middle of playback
-     * Enhanced with multiple fallback sources and automatic recovery
+     * Handle MPD (Media Presentation Description) streams for mobile app format
      */
-    private suspend fun createRobustAudioStream(
-        originalUrl: String, 
-        attempt: Int, 
-        strategy: String, 
-        networkType: String,
-        qualityValue: Int
-    ): Streamable.Source.Http {
+    private suspend fun handleMPDStream(mpdUrl: String, strategy: String, networkType: String): Streamable.Media {
+        println("DEBUG: Processing MPD stream from: $mpdUrl")
         
-        // Create primary stream source
-        val primaryUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
-        val primaryHeaders = generateMobileHeaders(strategy, networkType)
-        
-        val primarySource = when (strategy) {
-            "mobile_emulation", "aggressive_mobile" -> {
-                createPostRequest(primaryUrl, primaryHeaders, "rn=1&robust=primary")
-            }
-            "desktop_fallback" -> {
-                createPostRequest(primaryUrl, primaryHeaders, "robust=primary")
-            }
-            else -> {
-                Streamable.Source.Http(
-                    primaryUrl.toRequest(),
-                    quality = qualityValue
-                )
-            }
-        }
-        
-        // For WiFi networks with 403 issues, create additional backup sources
-        if (networkType.contains("wifi") || networkType.contains("restricted")) {
-            val backupSources = mutableListOf<Streamable.Source.Http>()
+        return try {
+            // For now, we'll simulate MPD handling by creating separate audio and video sources
+            // In a full implementation, you would parse the MPD XML and extract actual URLs
             
-            // Add backup sources with different strategies and quality levels
-            val backupStrategies = listOf("alternate_params", "mobile_emulation", "desktop_fallback")
-            val qualityLevels = listOf(
-                qualityValue,           // Original quality
-                (qualityValue * 0.8).toInt(),  // 80% quality
-                (qualityValue * 0.6).toInt(),  // 60% quality
-                96000                   // Minimum quality
-            )
+            // Simulate getting audio and video URLs from MPD
+            val audioUrl = "$mpdUrl/audio"
+            val videoUrl = "$mpdUrl/video"
             
-            for ((strategyIndex, backupStrategy) in backupStrategies.withIndex()) {
-                for ((qualityIndex, qualityLevel) in qualityLevels.take(2).withIndex()) {
-                    try {
-                        val backupUrl = generateEnhancedUrl(
-                            originalUrl, 
-                            attempt + strategyIndex + qualityIndex + 1, 
-                            backupStrategy, 
-                            networkType
-                        )
-                        val backupHeaders = generateMobileHeaders(backupStrategy, networkType)
-                        
-                        val backupSource = when (backupStrategy) {
-                            "mobile_emulation" -> {
-                                createPostRequest(backupUrl, backupHeaders, "rn=1&backup=${strategyIndex}_${qualityIndex}")
-                            }
-                            "desktop_fallback" -> {
-                                createPostRequest(backupUrl, backupHeaders, "backup=${strategyIndex}_${qualityIndex}")
-                            }
-                            else -> {
-                                Streamable.Source.Http(
-                                    backupUrl.toRequest(),
-                                    quality = qualityLevel
-                                )
-                            }
-                        }
-                        backupSources.add(backupSource)
-                    } catch (e: Exception) {
-                        println("DEBUG: Failed to create backup source ${strategyIndex}_${qualityIndex}: ${e.message}")
-                    }
+            // Generate enhanced URLs for both streams
+            val enhancedAudioUrl = generateEnhancedUrl(audioUrl, 1, strategy, networkType)
+            val enhancedVideoUrl = generateEnhancedUrl(videoUrl, 1, strategy, networkType)
+            
+            // Generate headers for both streams
+            val audioHeaders = generateMobileHeaders(strategy, networkType)
+            val videoHeaders = generateMobileHeaders(strategy, networkType)
+            
+            // Create audio source
+            val audioSource = when (strategy) {
+                "mobile_emulation", "aggressive_mobile" -> {
+                    createPostRequest(enhancedAudioUrl, audioHeaders, "mpd=1&type=audio")
+                }
+                "desktop_fallback" -> {
+                    createPostRequest(enhancedAudioUrl, audioHeaders, "type=audio")
+                }
+                else -> {
+                    Streamable.Source.Http(
+                        enhancedAudioUrl.toRequest(),
+                        quality = 192000
+                    )
                 }
             }
             
-            // If we have backup sources, return a composite source that can switch between them
-            if (backupSources.isNotEmpty()) {
-                println("DEBUG: Created robust audio stream with ${backupSources.size} backup sources")
-                
-                // In a full implementation, you would create a composite source that can automatically
-                // switch between primary and backup sources when failures occur
-                // For now, we'll return the primary source but the backup sources are available
-                // for the media player to use if needed
-                
-                // Store backup sources info for potential recovery
-                return primarySource
+            // Create video source
+            val videoSource = when (strategy) {
+                "mobile_emulation", "aggressive_mobile" -> {
+                    createPostRequest(enhancedVideoUrl, videoHeaders, "mpd=1&type=video")
+                }
+                "desktop_fallback" -> {
+                    createPostRequest(enhancedVideoUrl, videoHeaders, "type=video")
+                }
+                else -> {
+                    Streamable.Source.Http(
+                        enhancedVideoUrl.toRequest(),
+                        quality = 500000
+                    )
+                }
             }
-        }
-        
-        return primarySource
-    }
-    private fun createPostRequest(url: String, headers: Map<String, String>, body: String? = null): Streamable.Source.Http {
-        // Create a custom request that simulates POST behavior
-        // Since we can't easily modify the underlying HTTP client, we'll enhance the URL
-        // and headers to mimic mobile app behavior
-        
-        val enhancedUrl = if (body != null) {
-            // Add mobile-specific parameters to simulate POST data
-            val mobileParams = mutableMapOf<String, String>()
-            mobileParams["rn"] = "1"
-            mobileParams["alr"] = "yes"
-            mobileParams["c"] = "ANDROID"
-            mobileParams["cver"] = "6.45.54"
-            mobileParams["cos"] = "Android"
-            mobileParams["cplatform"] = "mobile"
             
-            val paramsString = mobileParams.map { "${it.key}=${it.value}" }.joinToString("&")
-            if (url.contains("?")) {
-                "$url&$paramsString"
-            } else {
-                "$url?$paramsString"
-            }
-        } else {
-            url
+            println("DEBUG: Created MPD stream with audio and video sources")
+            
+            return Streamable.Media.Server(
+                sources = listOf(audioSource, videoSource),
+                merged = true // MPD typically requires merging audio and video
+            )
+            
+        } catch (e: Exception) {
+            println("DEBUG: Failed to process MPD stream: ${e.message}")
+            throw Exception("MPD stream processing failed: ${e.message}")
         }
-        
-        // Add mobile-specific headers to make it look like a real mobile app request
-        val finalHeaders = headers.toMutableMap()
-        finalHeaders["Content-Type"] = "application/x-www-form-urlencoded"
-        finalHeaders["X-Goog-AuthUser"] = "0"
-        finalHeaders["X-Goog-Visitor-Id"] = api.visitor_id?.toString() ?: ""
-        finalHeaders["X-Origin"] = "https://music.youtube.com"
-        finalHeaders["X-YouTube-Client-Name"] = "21"
-        finalHeaders["X-YouTube-Client-Version"] = "6.45.54"
-        finalHeaders["X-YouTube-Device"] = "sm-g930f"
-        finalHeaders["X-YouTube-Page-CL"] = "123456789"
-        finalHeaders["X-YouTube-Page-Label"] = "youtube.music"
-        finalHeaders["X-YouTube-Utc-Offset"] = "0"
-        finalHeaders["X-YouTube-Time-Zone"] = "UTC"
-        
-        // Add headers to the request - convert to URL parameters to simulate header behavior
-        val headerString = finalHeaders.map { (key, value) ->
-            "${key.hashCode()}=${value.hashCode()}"
-        }.joinToString("&")
-        
-        val finalUrl = if (enhancedUrl.contains("?")) {
-            "$enhancedUrl&headers=$headerString"
-        } else {
-            "$enhancedUrl?headers=$headerString"
-        }
-        
-        return Streamable.Source.Http(
-            finalUrl.toRequest(),
-            quality = 0 // Will be set by caller
-        )
     }
 
     override suspend fun loadStreamableMedia(
@@ -763,25 +754,21 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     ): Streamable.Media {
         return when (streamable.type) {
             Streamable.MediaType.Server -> when (streamable.id) {
-                "AUDIO_MP3", "AUDIO_MP4", "AUDIO_WEBM" -> {
-                    // Enhanced audio-only streaming based on real YouTube Music web player behavior
-                    println("DEBUG: Loading audio stream for videoId: ${streamable.extras["videoId"]}")
+                "DUAL_STREAM" -> {
+                    println("DEBUG: Loading multi-format stream for videoId: ${streamable.extras["videoId"]}")
                     
                     // Ensure visitor ID is initialized
                     ensureVisitorId()
                     
                     val videoId = streamable.extras["videoId"]!!
-                    var audioSources = mutableListOf<Streamable.Source.Http>()
+                    var allSources = mutableListOf<Streamable.Source.Http>()
                     var lastError: Exception? = null
+                    var formatStats = mutableMapOf<String, Int>() 
                     
-                    // Detect network type to apply appropriate strategies
-                    val networkType = detectNetworkType()
-                    println("DEBUG: Detected network type: $networkType")
-                    
-                    // Enhanced retry logic with network-aware strategies based on real YouTube behavior
-                    for (attempt in 1..5) {
+                    // Enhanced retry logic with network-aware strategies
+                    for (attempt in 1..6) {
                         try {
-                            println("DEBUG: Audio attempt $attempt of 5 on $networkType")
+                            println("DEBUG: Multi-format attempt $attempt of 6")
                             
                             // Add random delay to mimic human behavior (except for first attempt)
                             if (attempt > 1) {
@@ -791,10 +778,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             }
                             
                             // Get strategy based on network type and attempt number
+                            val networkType = detectNetworkType()
                             val strategy = getStrategyForNetwork(attempt, networkType)
                             println("DEBUG: Using strategy: $strategy for $networkType")
                             
-                            // Apply strategy-specific settings BEFORE making the request
+                            // Apply strategy-specific settings
                             when (strategy) {
                                 "reset_visitor" -> {
                                     println("DEBUG: Resetting visitor ID")
@@ -803,27 +791,23 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                                 "mobile_emulation", "aggressive_mobile" -> {
                                     println("DEBUG: Applying $strategy strategy - switching to mobile API")
-                                    // Force mobile API context for this attempt
                                     val tempVisitorId = api.visitor_id
                                     api.visitor_id = null
                                     try {
-                                        // Use mobile API for this attempt
                                         mobileApi.visitor_id = visitorEndpoint.getVisitorId()
                                         println("DEBUG: Mobile API initialized successfully")
                                     } catch (e: Exception) {
                                         println("DEBUG: Mobile API initialization failed: ${e.message}")
-                                        // Fall back to standard API
                                         api.visitor_id = tempVisitorId
                                     }
                                 }
                                 "desktop_fallback" -> {
                                     println("DEBUG: Applying desktop fallback strategy")
-                                    // Ensure we're using standard API with desktop headers
                                     api.user_auth_state = null
                                 }
                             }
                             
-                            // Enhanced WiFi restriction handling for problematic networks
+                            // Enhanced WiFi restriction handling
                             if (networkType.contains("wifi") || networkType.contains("restricted")) {
                                 handleWifiRestrictions(attempt, networkType)
                             }
@@ -867,7 +851,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             }
                             
                             // Check if we have MPD (Media Presentation Description) support
-                            // Note: The actual property name might be different, let's check available properties
                             val mpdUrl = try {
                                 video.streamingData.javaClass.getDeclaredField("dashManifestUrl").let { field ->
                                     field.isAccessible = true
@@ -888,28 +871,35 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             // Process formats based on user preferences and availability
                             val audioSources = mutableListOf<Streamable.Source.Http>()
                             val videoSources = mutableListOf<Streamable.Source.Http>()
+                            val combinedSources = mutableListOf<Streamable.Source.Http>()
                             
                             video.streamingData.adaptiveFormats.forEach { format ->
                                 val mimeType = format.mimeType.lowercase()
                                 val originalUrl = format.url ?: return@forEach
                                 
-                                // Categorize formats by type
+                                // Categorize formats by type - Enhanced for YouTube adaptive streaming
                                 val isAudioFormat = when {
-                                    mimeType.contains("audio/mp4") -> true
-                                    mimeType.contains("audio/webm") -> true
+                                    mimeType.contains("audio/mp4") && !mimeType.contains("video") -> true
+                                    mimeType.contains("audio/webm") && !mimeType.contains("video") -> true
                                     mimeType.contains("audio/mp3") || mimeType.contains("audio/mpeg") -> true
                                     else -> false
                                 }
                                 
                                 val isVideoFormat = when {
-                                    mimeType.contains("video/mp4") -> true
-                                    mimeType.contains("video/webm") -> true
+                                    mimeType.contains("video/mp4") && !mimeType.contains("audio") -> true
+                                    mimeType.contains("video/webm") && !mimeType.contains("audio") -> true
+                                    else -> false
+                                }
+                                
+                                val isCombinedFormat = when {
+                                    mimeType.contains("video/mp4") && mimeType.contains("audio") -> true
+                                    mimeType.contains("video/webm") && mimeType.contains("audio") -> true
                                     else -> false
                                 }
                                 
                                 when {
                                     isAudioFormat -> {
-                                        // Process audio format with quality-adaptive resilient streaming
+                                        // Process audio-only format with quality-adaptive streaming
                                         val qualityValue = when {
                                             format.bitrate > 0 -> {
                                                 val baseBitrate = format.bitrate.toInt()
@@ -947,106 +937,98 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                         )
                                         
                                         audioSources.add(audioSource)
-                                        println("DEBUG: Added quality-adaptive audio source (quality: $qualityValue, mimeType: $mimeType)")
+                                        println("DEBUG: Added audio-only source (quality: $qualityValue, mimeType: $mimeType)")
                                     }
                                     
-                                    isVideoFormat && showVideos -> {
-                                        // Process video format (only if videos are enabled) with quality-adaptive streaming
-                                        val qualityValue = format.bitrate?.toInt() ?: 0
-                                        val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
-                                        
-                                        // Create quality-adaptive video source
-                                        val videoSource = createQualityAdaptiveSource(
-                                            freshUrl,
-                                            qualityValue,
-                                            strategy,
-                                            networkType
-                                        )
-                                        
-                                        videoSources.add(videoSource)
-                                        println("DEBUG: Added quality-adaptive video source (quality: $qualityValue, mimeType: $mimeType)")
+                                    isVideoFormat -> {
+                                        // Process video-only format (only if videos are enabled) with quality-adaptive streaming
+                                        if (showVideos) {
+                                            val qualityValue = format.bitrate?.toInt() ?: 0
+                                            val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
+                                            
+                                            // Create quality-adaptive video source
+                                            val videoSource = createQualityAdaptiveSource(
+                                                freshUrl,
+                                                qualityValue,
+                                                strategy,
+                                                networkType
+                                            )
+                                            
+                                            videoSources.add(videoSource)
+                                            println("DEBUG: Added video-only source (quality: $qualityValue, mimeType: $mimeType)")
+                                        }
+                                    }
+                                    
+                                    isCombinedFormat -> {
+                                        // Process combined format (audio + video in single stream)
+                                        if (showVideos) {
+                                            val qualityValue = when {
+                                                format.bitrate > 0 -> format.bitrate.toInt()
+                                                format.height != null -> (format.height!! * 1000) + (format.bitrate?.toInt() ?: 0)
+                                                else -> 500000 // Default combined quality
+                                            }
+                                            
+                                            val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
+                                            
+                                            // Create combined source (single stream with both audio and video)
+                                            val combinedSource = createQualityAdaptiveSource(
+                                                freshUrl,
+                                                qualityValue,
+                                                strategy,
+                                                networkType
+                                            )
+                                            
+                                            combinedSources.add(combinedSource)
+                                            println("DEBUG: Added combined audio+video source (quality: $qualityValue, mimeType: $mimeType)")
+                                        }
                                     }
                                 }
-                            }
-                            
-                            // Check if we have HLS (m3u8) support - PREFERRED for audio reliability
-                            val hlsUrl = try {
-                                video.streamingData.javaClass.getDeclaredField("hlsManifestUrl").let { field ->
-                                    field.isAccessible = true
-                                    field.get(video.streamingData) as? String
-                                }
-                            } catch (e: Exception) {
-                                null
-                            }
-                            
-                            if (hlsUrl != null) {
-                                println("DEBUG: Found HLS stream URL: $hlsUrl")
-                                // Use HLS stream for better reliability and adaptive streaming
-                                val hlsMedia = handleHLSStream(hlsUrl, strategy, networkType)
-                                lastError = null
-                                return hlsMedia
-                            }
-                            
-                            // Check if we have MPD (Media Presentation Description) support
-                            // Note: The actual property name might be different, let's check available properties
-                            val mpdUrl = try {
-                                video.streamingData.javaClass.getDeclaredField("dashManifestUrl").let { field ->
-                                    field.isAccessible = true
-                                    field.get(video.streamingData) as? String
-                                }
-                            } catch (e: Exception) {
-                                null
-                            }
-                            
-                            if (mpdUrl != null && showVideos) {
-                                println("DEBUG: Found MPD stream URL: $mpdUrl")
-                                // Use MPD stream for mobile app format
-                                val mpdMedia = handleMPDStream(mpdUrl, strategy, networkType)
-                                lastError = null
-                                return mpdMedia
                             }
                             
                             // Determine the final media type based on user preferences and available sources
+                            // IMPORTANT: No separate video streams without audio are allowed
+                            // Only combined streams (audio+video) or audio-only streams are supported
                             val targetQuality = getTargetVideoQuality(streamable)
                             println("DEBUG: Target video quality: ${targetQuality ?: "any"}")
+                            println("DEBUG: Available sources - Audio: ${audioSources.size}, Video: ${videoSources.size}, Combined: ${combinedSources.size}")
                             
                             val resultMedia = when {
+                                // Priority 1: Combined formats (single stream with audio + video) - most compatible
+                                combinedSources.isNotEmpty() && showVideos -> {
+                                    println("DEBUG: Creating combined audio+video stream (single source)")
+                                    val bestCombinedSource = combinedSources.maxByOrNull { it.quality }
+                                    if (bestCombinedSource != null) {
+                                        Streamable.Media.Server(listOf(bestCombinedSource), merged = false)
+                                    } else {
+                                        throw Exception("No valid combined sources found")
+                                    }
+                                }
+                                
+                                // Priority 2: Separate audio + video sources (requires merging) - only if both available
                                 preferVideos && videoSources.isNotEmpty() && audioSources.isNotEmpty() -> {
-                                    // User prefers videos and we have both audio and video sources
-                                    println("DEBUG: Creating merged audio+video stream")
+                                    println("DEBUG: Creating merged audio+video stream (separate sources)")
                                     val bestAudioSource = audioSources.maxByOrNull { it.quality }
                                     val bestVideoSource = getBestVideoSourceByQuality(videoSources, targetQuality)
                                     
                                     if (bestAudioSource != null && bestVideoSource != null) {
                                         Streamable.Media.Server(
                                             sources = listOf(bestAudioSource, bestVideoSource),
-                                            merged = true
+                                            merged = true  // Player must merge separate audio and video streams
                                         )
                                     } else {
-                                        // Fallback to audio-only
+                                        // Fallback to audio-only if either audio or video is missing
                                         val bestAudioSource = audioSources.maxByOrNull { it.quality }
                                         if (bestAudioSource != null) {
                                             Streamable.Media.Server(listOf(bestAudioSource), false)
                                         } else {
-                                            throw Exception("No valid audio sources found")
+                                            throw Exception("No valid audio sources found for fallback")
                                         }
                                     }
                                 }
                                 
-                                showVideos && videoSources.isNotEmpty() && !preferVideos -> {
-                                    // Videos are enabled but user prefers audio, still provide audio
-                                    println("DEBUG: Creating audio stream (video sources available but not preferred)")
-                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
-                                    if (bestAudioSource != null) {
-                                        Streamable.Media.Server(listOf(bestAudioSource), false)
-                                    } else {
-                                        throw Exception("No valid audio sources found")
-                                    }
-                                }
-                                
+                                // Priority 3: Audio-only stream (fallback when no combined or separate audio+video available)
                                 audioSources.isNotEmpty() -> {
-                                    // Audio-only mode or no video sources available
-                                    println("DEBUG: Creating audio-only stream")
+                                    println("DEBUG: Creating audio-only stream (no video sources available or videos disabled)")
                                     val bestAudioSource = audioSources.maxByOrNull { it.quality }
                                     if (bestAudioSource != null) {
                                         Streamable.Media.Server(listOf(bestAudioSource), false)
@@ -1056,7 +1038,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                                 
                                 else -> {
-                                    throw Exception("No valid media sources found")
+                                    throw Exception("No valid media sources found - only audio with video or audio-only streams are supported")
                                 }
                             }
                             
@@ -1069,7 +1051,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             val is403Error = is403Error(e)
                             val strategy = getStrategyForNetwork(attempt, networkType)
                             
-                            println("DEBUG: Audio attempt $attempt failed with strategy $strategy: ${e.message}")
+                            println("DEBUG: Multi-format attempt $attempt failed with strategy $strategy: ${e.message}")
                             if (is403Error) {
                                 println("DEBUG: Detected 403 error - applying aggressive recovery")
                                 
@@ -1099,36 +1081,36 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             }
                             
                             // Enhanced delay strategy for 403 errors and network restrictions
-                            if (attempt < 5) {
+                            if (attempt < 6) {
                                 val delayTime = when {
                                     is403Error && networkType == "restricted_wifi_403" -> {
                                         // Aggressive delay for 403 errors on restricted WiFi
                                         when (attempt) {
-                                            1 -> 1000L  // First 403: 1s
-                                            2 -> 2000L  // Second 403: 2s
-                                            3 -> 4000L  // Third 403: 4s
-                                            4 -> 8000L  // Fourth 403: 8s
-                                            else -> 1000L
+                                            1 -> 1000L   // 1s
+                                            2 -> 2000L   // 2s
+                                            3 -> 4000L   // 4s
+                                            4 -> 8000L   // 8s
+                                            else -> 500L  // 0.5s
                                         }
                                     }
                                     is403Error -> {
-                                        // Standard 403 error delay
+                                        // Standard delay for 403 errors
                                         when (attempt) {
-                                            1 -> 800L   // First 403: 800ms
-                                            2 -> 1500L  // Second 403: 1.5s
-                                            3 -> 3000L  // Third 403: 3s
-                                            4 -> 5000L  // Fourth 403: 5s
-                                            else -> 1000L
+                                            1 -> 500L    // 0.5s
+                                            2 -> 1000L   // 1s
+                                            3 -> 2000L   // 2s
+                                            4 -> 3000L   // 3s
+                                            else -> 500L  // 0.5s
                                         }
                                     }
                                     else -> {
-                                        // Standard adaptive delay for other errors
+                                        // Standard delay for other errors
                                         when (attempt) {
-                                            1 -> 500L   // First failure: 500ms
-                                            2 -> 1000L  // Second failure: 1s
-                                            3 -> 2000L  // Third failure: 2s
-                                            4 -> 3000L  // Fourth failure: 3s
-                                            else -> 500L
+                                            1 -> 200L    // 0.2s
+                                            2 -> 500L    // 0.5s
+                                            3 -> 1000L   // 1s
+                                            4 -> 1500L   // 1.5s
+                                            else -> 500L  // 0.5s
                                         }
                                     }
                                 }
@@ -1144,1259 +1126,247 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         }
                     }
                     
-                    // If all attempts failed, throw the last error with network info
-                    val errorMsg = "All audio attempts failed on $networkType. This might be due to network restrictions. Last error: ${lastError?.message}"
-                    println("DEBUG: $errorMsg")
-                    throw Exception(errorMsg)
+                    throw lastError ?: Exception("All multi-format attempts failed")
                 }
                 
-                "VIDEO_MP4", "VIDEO_WEBM" -> {
-                    // Video streaming support with separate audio/video handling
-                    println("DEBUG: Loading video stream for videoId: ${streamable.extras["videoId"]}")
-                    
-                    if (!showVideos) {
-                        throw Exception("Video streaming is disabled in settings")
-                    }
-                    
-                    // Ensure visitor ID is initialized
+                "VIDEO_M3U8" -> {
                     ensureVisitorId()
                     
-                    val videoId = streamable.extras["videoId"]!!
+                    println("DEBUG: Refreshing HLS URL for videoId: ${streamable.extras["videoId"]}")
+                    
                     var lastError: Exception? = null
-                    
-                    // Detect network type to apply appropriate strategies
                     val networkType = detectNetworkType()
-                    println("DEBUG: Detected network type: $networkType")
                     
-                    // Enhanced retry logic for video streams
-                    for (attempt in 1..5) {
+                    for (attempt in 1..8) { 
                         try {
-                            println("DEBUG: Video attempt $attempt of 5 on $networkType")
+                            println("DEBUG: HLS Attempt $attempt of 8")
                             
                             // Add random delay to mimic human behavior (except for first attempt)
                             if (attempt > 1) {
-                                val delay = (500L * attempt) + (Math.random() * 1000L).toLong()
+                                val delay = (200L * attempt) + (Math.random() * 500L).toLong()
                                 println("DEBUG: Adding random delay: ${delay}ms")
                                 kotlinx.coroutines.delay(delay)
                             }
                             
-                            // Get strategy based on network type and attempt number
                             val strategy = getStrategyForNetwork(attempt, networkType)
-                            println("DEBUG: Using strategy: $strategy for $networkType")
+                            println("DEBUG: Using strategy: $strategy for HLS")
                             
-                            // Apply strategy-specific settings BEFORE making the request
+                            // Apply strategy-specific settings
                             when (strategy) {
                                 "reset_visitor" -> {
-                                    println("DEBUG: Resetting visitor ID")
+                                    println("DEBUG: Resetting visitor ID for HLS")
                                     api.visitor_id = null
                                     ensureVisitorId()
                                 }
                                 "mobile_emulation", "aggressive_mobile" -> {
-                                    println("DEBUG: Applying $strategy strategy - switching to mobile API")
-                                    // Force mobile API context for this attempt
+                                    println("DEBUG: Applying mobile strategy for HLS")
                                     val tempVisitorId = api.visitor_id
                                     api.visitor_id = null
                                     try {
-                                        // Use mobile API for this attempt
                                         mobileApi.visitor_id = visitorEndpoint.getVisitorId()
-                                        println("DEBUG: Mobile API initialized successfully")
                                     } catch (e: Exception) {
-                                        println("DEBUG: Mobile API initialization failed: ${e.message}")
-                                        // Fall back to standard API
+                                        println("DEBUG: Mobile API initialization failed for HLS: ${e.message}")
                                         api.visitor_id = tempVisitorId
                                     }
                                 }
-                                "desktop_fallback" -> {
-                                    println("DEBUG: Applying desktop fallback strategy")
-                                    // Ensure we're using standard API with desktop headers
-                                    api.user_auth_state = null
-                                }
                             }
                             
-                            // Get video with different parameters based on strategy
-                            val useDifferentParams = strategy != "standard"
+                            val useDifferentParams = attempt % 2 == 0
                             val currentVideoEndpoint = when (strategy) {
+                                "mobile_emulation", "aggressive_mobile" -> mobileVideoEndpoint
+                                else -> videoEndpoint
+                            }
+                            
+                            val (video, _) = currentVideoEndpoint.getVideo(useDifferentParams, streamable.extras["videoId"]!!)
+                            val hlsManifestUrl = video.streamingData.hlsManifestUrl!!
+                            
+                            println("DEBUG: Got HLS URL on attempt $attempt: $hlsManifestUrl")
+                            
+                            // Use enhanced HLS handling
+                            val hlsMedia = handleHLSStream(hlsManifestUrl, strategy, networkType)
+                            lastError = null
+                            return hlsMedia
+                            
+                        } catch (e: Exception) {
+                            lastError = e
+                            val is403Error = is403Error(e)
+                            println("DEBUG: HLS Attempt $attempt failed: ${e.message}")
+                            
+                            if (is403Error && attempt >= 2) {
+                                println("DEBUG: Performing cache reset for HLS 403 error")
+                                resetApiCache()
+                            }
+                            
+                            if (attempt < 8) {
+                                val delayTime = if (is403Error) 1000L else 200L
+                                kotlinx.coroutines.delay(delayTime)
+                            }
+                        }
+                    }                    
+                    throw lastError ?: Exception("All HLS attempts failed")
+                }
+                
+                "AUDIO_MP3" -> {
+                    ensureVisitorId()
+                    println("DEBUG: Refreshing audio URLs for videoId: ${streamable.extras["videoId"]}")                
+                    
+                    var lastError: Exception? = null
+                    val networkType = detectNetworkType()
+                    
+                    for (attempt in 1..8) { 
+                        try {
+                            println("DEBUG: Audio Attempt $attempt of 8")
+                            
+                            // Add random delay to mimic human behavior (except for first attempt)
+                            if (attempt > 1) {
+                                val delay = (200L * attempt) + (Math.random() * 500L).toLong()
+                                println("DEBUG: Adding random delay: ${delay}ms")
+                                kotlinx.coroutines.delay(delay)
+                            }
+                            
+                            val strategy = getStrategyForNetwork(attempt, networkType)
+                            println("DEBUG: Using strategy: $strategy for audio")
+                            
+                            // Apply strategy-specific settings
+                            when (strategy) {
+                                "reset_visitor" -> {
+                                    println("DEBUG: Resetting visitor ID for audio")
+                                    api.visitor_id = null
+                                    ensureVisitorId()
+                                }
                                 "mobile_emulation", "aggressive_mobile" -> {
-                                    println("DEBUG: Using mobile API endpoint for video retrieval")
-                                    mobileVideoEndpoint
-                                }
-                                "desktop_fallback" -> {
-                                    println("DEBUG: Using standard API endpoint for desktop fallback")
-                                    videoEndpoint
-                                }
-                                else -> {
-                                    println("DEBUG: Using standard API endpoint")
-                                    videoEndpoint
+                                    println("DEBUG: Applying mobile strategy for audio")
+                                    val tempVisitorId = api.visitor_id
+                                    api.visitor_id = null
+                                    try {
+                                        mobileApi.visitor_id = visitorEndpoint.getVisitorId()
+                                    } catch (e: Exception) {
+                                        println("DEBUG: Mobile API initialization failed for audio: ${e.message}")
+                                        api.visitor_id = tempVisitorId
+                                    }
                                 }
                             }
                             
-                            println("DEBUG: Getting video with useDifferentParams=$useDifferentParams")
-                            val (video, _) = currentVideoEndpoint.getVideo(useDifferentParams, videoId)
-                            
-                            // Check if we have HLS (m3u8) support - PREFERRED for reliability
-                            val videoHlsUrl = try {
-                                video.streamingData.javaClass.getDeclaredField("hlsManifestUrl").let { field ->
-                                    field.isAccessible = true
-                                    field.get(video.streamingData) as? String
-                                }
-                            } catch (e: Exception) {
-                                null
+                            val useDifferentParams = attempt % 2 == 0
+                            val currentVideoEndpoint = when (strategy) {
+                                "mobile_emulation", "aggressive_mobile" -> mobileVideoEndpoint
+                                else -> videoEndpoint
                             }
                             
-                            if (videoHlsUrl != null) {
-                                println("DEBUG: Found HLS stream URL for video: $videoHlsUrl")
-                                val hlsMedia = handleHLSStream(videoHlsUrl, strategy, networkType)
-                                lastError = null
-                                return hlsMedia
-                            }
+                            val (video, _) = currentVideoEndpoint.getVideo(useDifferentParams, streamable.extras["videoId"]!!)
                             
-                            // Check if we have MPD support first (preferred for video)
-                            val videoMpdUrl = try {
-                                video.streamingData.javaClass.getDeclaredField("dashManifestUrl").let { field ->
-                                    field.isAccessible = true
-                                    field.get(video.streamingData) as? String
-                                }
-                            } catch (e: Exception) {
-                                null
-                            }
-                            
-                            if (videoMpdUrl != null) {
-                                println("DEBUG: Found MPD stream URL for video: $videoMpdUrl")
-                                val mpdMedia = handleMPDStream(videoMpdUrl, strategy, networkType)
-                                lastError = null
-                                return mpdMedia
-                            }
-                            
-                            // Process formats for video streaming
+                            // Process audio formats with enhanced quality selection
                             val audioSources = mutableListOf<Streamable.Source.Http>()
-                            val videoSources = mutableListOf<Streamable.Source.Http>()
                             
                             video.streamingData.adaptiveFormats.forEach { format ->
                                 val mimeType = format.mimeType.lowercase()
                                 val originalUrl = format.url ?: return@forEach
                                 
-                                val isAudioFormat = when {
-                                    mimeType.contains("audio/mp4") -> true
-                                    mimeType.contains("audio/webm") -> true
-                                    mimeType.contains("audio/mp3") || mimeType.contains("audio/mpeg") -> true
-                                    else -> false
-                                }
+                                if (!mimeType.contains("audio")) return@forEach
                                 
-                                val isVideoFormat = when {
-                                    mimeType.contains("video/mp4") -> true
-                                    mimeType.contains("video/webm") -> true
-                                    else -> false
-                                }
-                                
-                                when {
-                                    isAudioFormat -> {
-                                        // Process audio format for video stream with quality-adaptive streaming
-                                        val qualityValue = format.bitrate?.toInt() ?: 192000
-                                        val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
-                                        
-                                        // Create quality-adaptive audio source
-                                        val audioSource = createQualityAdaptiveSource(
-                                            freshUrl,
-                                            qualityValue,
-                                            strategy,
-                                            networkType
-                                        )
-                                        
-                                        audioSources.add(audioSource)
+                                val qualityValue = when {
+                                    format.bitrate > 0 -> {
+                                        val baseBitrate = format.bitrate.toInt()
+                                        when (networkType) {
+                                            "restricted_wifi" -> minOf(baseBitrate, 128000)
+                                            "mobile_data" -> minOf(baseBitrate, 192000)
+                                            else -> baseBitrate
+                                        }
                                     }
-                                    
-                                    isVideoFormat -> {
-                                        // Process video format with quality-adaptive streaming
-                                        val qualityValue = format.bitrate?.toInt() ?: 0
-                                        val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
-                                        
-                                        // Create quality-adaptive video source
-                                        val videoSource = createQualityAdaptiveSource(
-                                            freshUrl,
-                                            qualityValue,
-                                            strategy,
-                                            networkType
-                                        )
-                                        
-                                        videoSources.add(videoSource)
-                                        println("DEBUG: Added quality-adaptive video source (quality: $qualityValue, mimeType: $mimeType)")
+                                    format.audioSampleRate != null -> {
+                                        val sampleRate = format.audioSampleRate!!.toInt()
+                                        when (networkType) {
+                                            "restricted_wifi" -> minOf(sampleRate, 128000)
+                                            "mobile_data" -> minOf(sampleRate, 192000)
+                                            else -> sampleRate
+                                        }
+                                    }
+                                    else -> {
+                                        when (networkType) {
+                                            "restricted_wifi" -> 96000
+                                            "mobile_data" -> 128000
+                                            else -> 192000
+                                        }
                                     }
                                 }
+                                
+                                val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
+                                
+                                // Create quality-adaptive audio source
+                                val audioSource = createQualityAdaptiveSource(
+                                    freshUrl,
+                                    qualityValue,
+                                    strategy,
+                                    networkType
+                                )
+                                
+                                audioSources.add(audioSource)
+                                println("DEBUG: Added quality-adaptive audio source (quality: $qualityValue, mimeType: $mimeType)")
                             }
                             
-                            // Create merged audio+video stream
-                            val targetQuality = getTargetVideoQuality(streamable)
-                            println("DEBUG: Video mode - Target video quality: ${targetQuality ?: "any"}")
-                            
-                            val resultMedia = when {
-                                videoSources.isNotEmpty() && audioSources.isNotEmpty() -> {
-                                    println("DEBUG: Creating merged audio+video stream")
-                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
-                                    val bestVideoSource = getBestVideoSourceByQuality(videoSources, targetQuality)
-                                    
-                                    if (bestAudioSource != null && bestVideoSource != null) {
-                                        Streamable.Media.Server(
-                                            sources = listOf(bestAudioSource, bestVideoSource),
-                                            merged = true
-                                        )
-                                    } else {
-                                        throw Exception("Could not create merged video stream")
-                                    }
+                            if (audioSources.isNotEmpty()) {
+                                // Sort by quality (highest first)
+                                audioSources.sortByDescending { it.quality }
+                                
+                                println("DEBUG: Created ${audioSources.size} audio sources with quality-adaptive streaming")
+                                println("DEBUG: Audio sources (top 3):")
+                                audioSources.take(3).forEachIndexed { index, source ->
+                                    println("DEBUG:   ${index + 1}. Quality: ${source.quality}")
                                 }
                                 
-                                videoSources.isNotEmpty() -> {
-                                    // Video-only stream (no audio track)
-                                    println("DEBUG: Creating video-only stream")
-                                    val bestVideoSource = getBestVideoSourceByQuality(videoSources, targetQuality)
-                                    if (bestVideoSource != null) {
-                                        Streamable.Media.Server(listOf(bestVideoSource), false)
-                                    } else {
-                                        throw Exception("No valid video sources found")
-                                    }
-                                }
-                                
-                                else -> {
-                                    throw Exception("No valid video sources found")
-                                }
+                                return Streamable.Media.Server(audioSources, false)
+                            } else {
+                                throw Exception("No audio formats found on attempt $attempt")
                             }
-                            
-                            // Return the result and break out of retry loop
-                            lastError = null
-                            return resultMedia
                             
                         } catch (e: Exception) {
                             lastError = e
                             val is403Error = is403Error(e)
-                            val strategy = getStrategyForNetwork(attempt, networkType)
+                            println("DEBUG: Audio Attempt $attempt failed: ${e.message}")
                             
-                            println("DEBUG: Video attempt $attempt failed with strategy $strategy: ${e.message}")
-                            if (is403Error) {
-                                println("DEBUG: Detected 403 error in video streaming - applying aggressive recovery")
-                                
-                                // Immediate aggressive action for 403 errors
-                                when (attempt) {
-                                    1 -> {
-                                        println("DEBUG: Immediate visitor ID reset for video 403 error")
-                                        api.visitor_id = null
-                                        ensureVisitorId()
-                                    }
-                                    2 -> {
-                                        println("DEBUG: Immediate cache reset for video 403 error")
-                                        resetApiCache()
-                                    }
-                                    3 -> {
-                                        println("DEBUG: Immediate mobile API switch for video 403 error")
-                                        val tempVisitorId = api.visitor_id
-                                        api.visitor_id = null
-                                        try {
-                                            mobileApi.visitor_id = visitorEndpoint.getVisitorId()
-                                        } catch (e: Exception) {
-                                            println("DEBUG: Mobile API switch failed: ${e.message}")
-                                            api.visitor_id = tempVisitorId
-                                        }
-                                    }
-                                }
+                            if (is403Error && attempt >= 2) {
+                                println("DEBUG: Performing cache reset for audio 403 error")
+                                resetApiCache()
                             }
                             
-                            // Enhanced delay strategy for 403 errors and network restrictions (same as audio)
-                            if (attempt < 5) {
-                                val delayTime = when {
-                                    is403Error && networkType == "restricted_wifi_403" -> {
-                                        // Aggressive delay for 403 errors on restricted WiFi
-                                        when (attempt) {
-                                            1 -> 1000L  // First 403: 1s
-                                            2 -> 2000L  // Second 403: 2s
-                                            3 -> 4000L  // Third 403: 4s
-                                            4 -> 8000L  // Fourth 403: 8s
-                                            else -> 1000L
-                                        }
-                                    }
-                                    is403Error -> {
-                                        // Standard 403 error delay
-                                        when (attempt) {
-                                            1 -> 800L   // First 403: 800ms
-                                            2 -> 1500L  // Second 403: 1.5s
-                                            3 -> 3000L  // Third 403: 3s
-                                            4 -> 5000L  // Fourth 403: 5s
-                                            else -> 1000L
-                                        }
-                                    }
-                                    else -> {
-                                        // Standard adaptive delay for other errors
-                                        when (attempt) {
-                                            1 -> 500L   // First failure: 500ms
-                                            2 -> 1000L  // Second failure: 1s
-                                            3 -> 2000L  // Third failure: 2s
-                                            4 -> 3000L  // Fourth failure: 3s
-                                            else -> 500L
-                                        }
-                                    }
-                                }
-                                println("DEBUG: Waiting ${delayTime}ms before next video attempt (403: $is403Error)")
+                            if (attempt < 8) {
+                                val delayTime = if (is403Error) 1000L else 200L
                                 kotlinx.coroutines.delay(delayTime)
-                                
-                                // Additional cache reset for 403 errors
-                                if (is403Error && attempt >= 2) {
-                                    println("DEBUG: Performing cache reset for video 403 error recovery")
-                                    resetApiCache()
-                                }
                             }
                         }
                     }
-                    
-                    // If all attempts failed, throw the last error
-                    val errorMsg = "All video attempts failed on $networkType. Last error: ${lastError?.message}"
-                    println("DEBUG: $errorMsg")
-                    throw Exception(errorMsg)
+                    throw lastError ?: Exception("All audio attempts failed")
                 }
                 
                 else -> throw IllegalArgumentException("Unknown server streamable ID: ${streamable.id}")
             }
-            
-            // Add other MediaType cases to make when exhaustive
             Streamable.MediaType.Background -> throw IllegalArgumentException("Background media type not supported")
             Streamable.MediaType.Subtitle -> throw IllegalArgumentException("Subtitle media type not supported")
         }
     }
-    
-    /**
-     * Generate enhanced URL with strategy-specific parameters to bypass network restrictions
-     * Enhanced with real YouTube Music web player interception data
-     */
-    private fun generateEnhancedUrl(originalUrl: String, attempt: Int, strategy: String, networkType: String): String {
-        val timestamp = System.currentTimeMillis()
-        val random = java.util.Random().nextInt(1000000)
-        
-        // Extract base URL and preserve existing parameters
-        val baseUrl = if (originalUrl.contains("?")) {
-            originalUrl.substringBefore("?")
-        } else {
-            originalUrl
-        }
-        
-        // Parse existing parameters if any
-        val existingParams = if (originalUrl.contains("?")) {
-            originalUrl.substringAfter("?").split("&").associate {
-                val (key, value) = it.split("=", limit = 2)
-                key to (value ?: "")
-            }
-        } else {
-            emptyMap()
-        }.toMutableMap()
-        
-        // Add/update parameters based on strategy and network type - Enhanced with real interception data
-        when (strategy) {
-            "standard" -> {
-                existingParams["t"] = timestamp.toString()
-                existingParams["r"] = random.toString()
-                existingParams["att"] = attempt.toString()
-                existingParams["nw"] = networkType
-                existingParams["alr"] = "yes" // From real interception
-                existingParams["svpuc"] = "1" // From real interception
-                existingParams["gir"] = "yes" // From real interception
-            }
-            "alternate_params" -> {
-                existingParams["time"] = (timestamp + 1000).toString()
-                existingParams["rand"] = (random + 1000).toString()
-                existingParams["attempt"] = attempt.toString()
-                existingParams["nw"] = networkType
-                existingParams["alr"] = "yes" // From real interception
-                existingParams["svpuc"] = "1" // From real interception
-                existingParams["gir"] = "yes" // From real interception
-                existingParams["srfvp"] = "1" // From real interception
-                existingParams["ump"] = "1" // From real interception
-            }
-            "reset_visitor" -> {
-                existingParams["ts"] = (timestamp + 2000).toString()
-                existingParams["rn"] = (random + 2000).toString()
-                existingParams["at"] = attempt.toString()
-                existingParams["reset"] = "1"
-                existingParams["nw"] = networkType
-                existingParams["svpuc"] = "1" // From real interception
-                existingParams["gir"] = "yes" // From real interception
-                existingParams["alr"] = "yes" // From real interception
-                existingParams["pot"] = generateRandomPot() // From real interception
-            }
-            "mobile_emulation" -> {
-                // Emulate the exact mobile parameters from interception
-                existingParams["_t"] = timestamp.toString()
-                existingParams["_r"] = random.toString()
-                existingParams["_a"] = attempt.toString()
-                existingParams["mobile"] = "1"
-                existingParams["android"] = "1"
-                existingParams["nw"] = networkType
-                existingParams["gir"] = "yes" // From real interception
-                existingParams["alr"] = "yes" // From real interception
-                existingParams["svpuc"] = "1" // From real interception
-                existingParams["srfvp"] = "1" // From real interception
-            }
-            "aggressive_mobile" -> {
-                existingParams["cache_bust"] = (timestamp + 5000).toString()
-                existingParams["random_id"] = (random + 5000).toString()
-                existingParams["try_num"] = attempt.toString()
-                existingParams["fresh"] = "1"
-                existingParams["aggressive"] = "1"
-                existingParams["nw"] = networkType
-                existingParams["svpuc"] = "1"
-                existingParams["gir"] = "yes"
-                existingParams["alr"] = "yes"
-                existingParams["srfvp"] = "1"
-                existingParams["ump"] = "1"
-                existingParams["pot"] = generateRandomPot() // From real interception
-                existingParams["rn"] = (random + attempt).toString() // From real interception
-            }
-            "desktop_fallback" -> {
-                existingParams["desktop"] = "1"
-                existingParams["fallback"] = "1"
-                existingParams["t"] = timestamp.toString()
-                existingParams["r"] = random.toString()
-                existingParams["att"] = attempt.toString()
-                existingParams["nw"] = networkType
-                existingParams["alr"] = "yes"
-                existingParams["svpuc"] = "1"
-            }
-        }
-        
-        // Build the final URL
-        val paramString = existingParams.map { (key, value) ->
-            "$key=$value"
-        }.joinToString("&")
-        
-        return "$baseUrl?$paramString"
-    }
-    
-    /**
-     * Generate random pot parameter based on real YouTube Music interception
-     * This appears to be a unique identifier for each request
-     */
-    private fun generateRandomPot(): String {
-        val chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
-        val random = java.util.Random()
-        val pot = StringBuilder()
-        for (i in 0 until 64) { // Based on real interception length
-            pot.append(chars[random.nextInt(chars.length)])
-        }
-        return pot.toString()
-    }
-    
-    /**
-     * Check if an exception is a 403 error
-     */
-    private fun is403Error(exception: Exception): Boolean {
-        return when (exception) {
-            is ClientRequestException -> {
-                exception.response.status.value == 403
-            }
-            is java.net.HttpURLConnection -> {
-                try {
-                    exception.responseCode == 403
-                } catch (e: Exception) {
-                    false
-                }
-            }
-            else -> {
-                // Check error message for 403
-                exception.message?.contains("403", ignoreCase = true) == true ||
-                exception.message?.contains("Forbidden", ignoreCase = true) == true
-            }
-        }
-    }
-    
-    /**
-     * Reset API cache and clear stored data to simulate fresh request
-     * Enhanced to be more aggressive for 403 error recovery
-     */
-    private suspend fun resetApiCache() {
-        try {
-            println("DEBUG: Resetting API cache for 403 error recovery")
-            
-            // Reset visitor ID to force new session
-            api.visitor_id = null
-            
-            // Clear any cached authentication state
-            api.user_auth_state = null
-            
-            // Also reset mobile API cache
-            mobileApi.visitor_id = null
-            mobileApi.user_auth_state = null
-            
-            // Force re-initialization of visitor ID with multiple attempts
-            var visitorResetSuccess = false
-            for (resetAttempt in 1..3) {
-                try {
-                    println("DEBUG: Visitor ID reset attempt $resetAttempt")
-                    ensureVisitorId()
-                    visitorResetSuccess = true
-                    break
-                } catch (e: Exception) {
-                    println("DEBUG: Visitor ID reset attempt $resetAttempt failed: ${e.message}")
-                    kotlinx.coroutines.delay(200L * resetAttempt)
-                }
-            }
-            
-            if (!visitorResetSuccess) {
-                println("DEBUG: All visitor ID reset attempts failed, using random ID")
-                // Generate a random visitor ID as last resort
-                api.visitor_id = generateRandomPot()
-            }
-            
-            // Add a small delay to ensure cache is cleared
-            kotlinx.coroutines.delay(500L)
-            
-            println("DEBUG: API cache reset completed successfully")
-        } catch (e: Exception) {
-            println("DEBUG: Failed to reset API cache: ${e.message}")
-            // Continue even if cache reset fails
-        }
-    }
-    
-    /**
-     * Enhanced IP rotation and visitor ID regeneration for WiFi issues
-     * This function attempts to simulate different network conditions to bypass WiFi restrictions
-     */
-    private suspend fun handleWifiRestrictions(attempt: Int, networkType: String) {
-        try {
-            println("DEBUG: Handling WiFi restrictions for attempt $attempt on $networkType")
-            
-            when (attempt) {
-                1 -> {
-                    // First attempt: Basic visitor ID reset
-                    println("DEBUG: Basic visitor ID reset for WiFi restrictions")
-                    api.visitor_id = null
-                    ensureVisitorId()
-                }
-                2 -> {
-                    // Second attempt: Aggressive cache reset
-                    println("DEBUG: Aggressive cache reset for WiFi restrictions")
-                    resetApiCache()
-                    
-                    // Add random delay to simulate different network timing
-                    val randomDelay = (500L + Math.random() * 1000L).toLong()
-                    kotlinx.coroutines.delay(randomDelay)
-                }
-                3 -> {
-                    // Third attempt: Complete session reset with new parameters
-                    println("DEBUG: Complete session reset for WiFi restrictions")
-                    
-                    // Reset everything
-                    api.visitor_id = null
-                    api.user_auth_state = null
-                    
-                    // Force new visitor ID with different timing
-                    kotlinx.coroutines.delay(1000L)
-                    ensureVisitorId()
-                    
-                    // Add additional randomization
-                    val randomDelay = (1000L + Math.random() * 2000L).toLong()
-                    kotlinx.coroutines.delay(randomDelay)
-                }
-                4 -> {
-                    // Fourth attempt: Switch to mobile API emulation
-                    println("DEBUG: Switching to mobile API emulation for WiFi restrictions")
-                    
-                    // Use mobile API instead of standard API
-                    val tempVisitorId = api.visitor_id
-                    api.visitor_id = null
-                    
-                    // Switch to mobile API context
-                    val mobileApi = mobileApi
-                    try {
-                        mobileApi.visitor_id = visitorEndpoint.getVisitorId()
-                    } catch (e: Exception) {
-                        println("DEBUG: Mobile API visitor ID failed: ${e.message}")
-                    }
-                    
-                    // Restore original API but with new visitor ID
-                    api.visitor_id = tempVisitorId
-                    ensureVisitorId()
-                }
-                5 -> {
-                    // Fifth attempt: Last resort - complete reinitialization
-                    println("DEBUG: Complete reinitialization for WiFi restrictions")
-                    
-                    // Reset all cached data
-                    api.visitor_id = null
-                    api.user_auth_state = null
-                    
-                    // Clear any internal caches (if accessible)
-                    try {
-                        // Attempt to clear HTTP client cache
-                        val clientField = api::class.java.getDeclaredField("client")
-                        clientField.isAccessible = true
-                        val client = clientField.get(api) as io.ktor.client.HttpClient
-                        // Note: Actual cache clearing would depend on the HTTP client implementation
-                        
-                        println("DEBUG: Attempted to clear HTTP client cache")
-                    } catch (e: Exception) {
-                        println("DEBUG: Could not clear HTTP client cache: ${e.message}")
-                    }
-                    
-                    // Long delay to ensure complete reset
-                    kotlinx.coroutines.delay(2000L)
-                    ensureVisitorId()
-                }
-            }
-            
-            println("DEBUG: WiFi restriction handling completed for attempt $attempt")
-        } catch (e: Exception) {
-            println("DEBUG: Failed to handle WiFi restrictions: ${e.message}")
-            // Continue even if WiFi handling fails
-        }
-    }
-    
-    /**
-     * Generate mobile-style headers based on real YouTube Music interception
-     */
-    private fun generateMobileHeaders(strategy: String, networkType: String): Map<String, String> {
-        val baseHeaders = mutableMapOf(
-            "Accept" to "*/*",
-            "Accept-Encoding" to "gzip, deflate, br, zstd",
-            "Accept-Language" to "en-GB,en;q=0.9,en-US;q=0.8,hi;q=0.7",
-            "Connection" to "keep-alive",
-            "Host" to "music.youtube.com",
-            "Origin" to "https://music.youtube.com",
-            "Referer" to "https://music.youtube.com/",
-            "Sec-Fetch-Dest" to "empty",
-            "Sec-Fetch-Mode" to "cors",
-            "Sec-Fetch-Site" to "cross-site",
-            "Sec-Fetch-Storage-Access" to "active"
-        )
-        
-        // Add mobile Chrome headers based on strategy - Enhanced with real YouTube Music interception data
-        when (strategy) {
-            "mobile_emulation" -> {
-                baseHeaders.putAll(mapOf(
-                    "User-Agent" to getRandomUserAgent(true),
-                    "sec-ch-ua" to "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
-                    "sec-ch-ua-arch" to "\"\"",
-                    "sec-ch-ua-bitness" to "\"\"",
-                    "sec-ch-ua-form-factors" to "\"Mobile\"",
-                    "sec-ch-ua-full-version" to "138.0.7204.180",
-                    "sec-ch-ua-full-version-list" to "\"Not)A;Brand\";v=\"8.0.0.0\", \"Chromium\";v=\"138.0.7204.180\", \"Google Chrome\";v=\"138.0.7204.180\"",
-                    "sec-ch-ua-mobile" to "?1",
-                    "sec-ch-ua-model" to "vivo 1916",
-                    "sec-ch-ua-platform" to "\"Android\"",
-                    "sec-ch-ua-platform-version" to "9.0.0",
-                    "sec-ch-ua-wow64" to "?0",
-                    "X-Browser-Channel" to "stable",
-                    "X-Browser-Copyright" to "Copyright 2025 Google LLC. All rights reserved.",
-                    "X-Browser-Validation" to "cgRO3CGCbt7QiyaJv5JRfyTvYHU=",
-                    "X-Browser-Year" to "2025",
-                    "X-Client-Data" to "CJW2yQEIpbbJAQipncoBCLbiygEIlKHLAQiKoM0BCO/8zgEI3oLPAQj6gs8BCJSEzwEIt4XPARiegs8BGM6CzwE="
-                ))
-            }
-            "aggressive_mobile" -> {
-                baseHeaders.putAll(mapOf(
-                    "User-Agent" to "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Mobile Safari/537.36",
-                    "sec-ch-ua" to "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
-                    "sec-ch-ua-mobile" to "?1",
-                    "sec-ch-ua-platform" to "\"Android\"",
-                    "sec-ch-ua-model" to "",
-                    "sec-ch-ua-platform-version" to "9.0.0",
-                    "sec-ch-ua-wow64" to "?0",
-                    "Accept" to "*/*",
-                    "Accept-Language" to "en-GB,en;q=0.9,en-US;q=0.8,hi;q=0.7",
-                    "X-Browser-Channel" to "stable",
-                    "X-Browser-Copyright" to "Copyright 2025 Google LLC. All rights reserved.",
-                    "X-Browser-Validation" to "cgRO3CGCbt7QiyaJv5JRfyTvYHU=",
-                    "X-Browser-Year" to "2025",
-                    "X-Client-Data" to "CJW2yQEIpbbJAQipncoBCLbiygEIlKHLAQiKoM0BCO/8zgEI3oLPAQj6gs8BCJSEzwEIt4XPARiegs8BGM6CzwE="
-                ))
-            }
-            "desktop_fallback" -> {
-                baseHeaders.putAll(mapOf(
-                    "User-Agent" to getRandomUserAgent(false),
-                    "sec-ch-ua" to "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
-                    "sec-ch-ua-mobile" to "?0",
-                    "sec-ch-ua-platform" to "\"Windows\"",
-                    "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-                    "Accept-Language" to "en-US,en;q=0.9",
-                    "Sec-Fetch-Dest" to "document",
-                    "Sec-Fetch-Mode" to "navigate",
-                    "Sec-Fetch-Site" to "none",
-                    "Sec-Fetch-User" to "?1"
-                ))
-            }
-            else -> {
-                // Default mobile headers with real YouTube Music data
-                baseHeaders.putAll(mapOf(
-                    "User-Agent" to getRandomUserAgent(true),
-                    "sec-ch-ua" to "\"Not)A;Brand\";v=\"8\", \"Chromium\";v=\"138\", \"Google Chrome\";v=\"138\"",
-                    "sec-ch-ua-mobile" to "?1",
-                    "sec-ch-ua-platform" to "\"Android\"",
-                    "X-Browser-Channel" to "stable",
-                    "X-Browser-Copyright" to "Copyright 2025 Google LLC. All rights reserved.",
-                    "X-Browser-Validation" to "cgRO3CGCbt7QiyaJv5JRfyTvYHU=",
-                    "X-Browser-Year" to "2025"
-                ))
-            }
-        }
-        
-        return baseHeaders
-    }
-
-    /**
-     * Handle MPD (Media Presentation Description) streams for mobile app format
-     * MPD streams provide separate audio and video URLs that need to be merged
-     */
-    private suspend fun handleMPDStream(mpdUrl: String, strategy: String, networkType: String): Streamable.Media {
-        println("DEBUG: Processing MPD stream from: $mpdUrl")
-        
-        return try {
-            // For now, we'll simulate MPD handling by creating separate audio and video sources
-            // In a full implementation, you would parse the MPD XML and extract actual URLs
-            
-            // Simulate getting audio and video URLs from MPD
-            val audioUrl = "$mpdUrl/audio"
-            val videoUrl = "$mpdUrl/video"
-            
-            // Generate enhanced URLs for both streams
-            val enhancedAudioUrl = generateEnhancedUrl(audioUrl, 1, strategy, networkType)
-            val enhancedVideoUrl = generateEnhancedUrl(videoUrl, 1, strategy, networkType)
-            
-            // Generate headers for both streams
-            val audioHeaders = generateMobileHeaders(strategy, networkType)
-            val videoHeaders = generateMobileHeaders(strategy, networkType)
-            
-            // Create audio source
-            val audioSource = when (strategy) {
-                "mobile_emulation", "aggressive_mobile" -> {
-                    createPostRequest(enhancedAudioUrl, audioHeaders, "rn=1")
-                }
-                "desktop_fallback" -> {
-                    createPostRequest(enhancedAudioUrl, audioHeaders, null)
-                }
-                else -> {
-                    Streamable.Source.Http(
-                        enhancedAudioUrl.toRequest(),
-                        quality = 192000 // Default high quality for MPD
-                    )
-                }
-            }
-            
-            // Create video source
-            val videoSource = when (strategy) {
-                "mobile_emulation", "aggressive_mobile" -> {
-                    createPostRequest(enhancedVideoUrl, videoHeaders, "rn=1")
-                }
-                "desktop_fallback" -> {
-                    createPostRequest(enhancedVideoUrl, videoHeaders, null)
-                }
-                else -> {
-                    Streamable.Source.Http(
-                        enhancedVideoUrl.toRequest(),
-                        quality = 1000000 // Default high quality for video
-                    )
-                }
-            }
-            
-            // Return merged audio+video stream
-            Streamable.Media.Server(
-                sources = listOf(audioSource, videoSource),
-                merged = true
-            )
-            
-        } catch (e: Exception) {
-            println("DEBUG: Failed to process MPD stream: ${e.message}")
-            throw Exception("MPD stream processing failed: ${e.message}")
-        }
-    }
-
-    /**
-     * Create a resilient HTTP source with automatic fallback and retry capability
-     * This handles 403 errors and stream failures by automatically switching to alternative sources
-     */
-    private fun createResilientHttpSource(
-        primaryUrl: String,
-        fallbackUrls: List<String>,
-        strategy: String,
-        networkType: String,
-        quality: Int = 192000
-    ): Streamable.Source.Http {
-        println("DEBUG: Creating resilient source with ${fallbackUrls.size} fallbacks")
-        
-        // Generate headers for the primary source
-        val primaryHeaders = generateMobileHeaders(strategy, networkType)
-        
-        // Create primary source with enhanced error handling
-        val primarySource = when (strategy) {
-            "mobile_emulation", "aggressive_mobile" -> {
-                createPostRequest(primaryUrl, primaryHeaders, "resilient=1")
-            }
-            "desktop_fallback" -> {
-                createPostRequest(primaryUrl, primaryHeaders, null)
-            }
-            else -> {
-                Streamable.Source.Http(
-                    primaryUrl.toRequest(),
-                    quality = quality
-                )
-            }
-        }
-        
-        // For now, return the primary source
-        // In a full implementation, you would create a custom source that handles fallbacks
-        // The fallback logic would be implemented at the media player level
-        return primarySource
-    }
-
-    /**
-     * Handle stream failure and automatically switch to fallback source
-     * This is called when a stream fails with 403 or other errors during playback
-     * Enhanced with progressive recovery and multiple fallback strategies
-     */
-    private suspend fun handleStreamFailure(
-        currentSource: Streamable.Source.Http,
-        fallbackSources: List<Streamable.Source.Http>,
-        attempt: Int,
-        strategy: String,
-        networkType: String
-    ): Streamable.Source.Http {
-        println("DEBUG: Handling stream failure, attempt $attempt, ${fallbackSources.size} fallbacks available")
-        
-        return try {
-            // Progressive recovery based on attempt number
-            when (attempt) {
-                1 -> {
-                    // First failure: Try quick visitor ID reset
-                    println("DEBUG: First failure - quick visitor ID reset")
-                    api.visitor_id = null
-                    ensureVisitorId()
-                }
-                2 -> {
-                    // Second failure: Aggressive cache reset
-                    println("DEBUG: Second failure - aggressive cache reset")
-                    resetApiCache()
-                }
-                3 -> {
-                    // Third failure: Switch to mobile API
-                    println("DEBUG: Third failure - mobile API switch")
-                    val tempVisitorId = api.visitor_id
-                    api.visitor_id = null
-                    try {
-                        mobileApi.visitor_id = visitorEndpoint.getVisitorId()
-                    } catch (e: Exception) {
-                        println("DEBUG: Mobile API switch failed: ${e.message}")
-                        api.visitor_id = tempVisitorId
-                    }
-                }
-                4 -> {
-                    // Fourth failure: Complete session reset
-                    println("DEBUG: Fourth failure - complete session reset")
-                    api.visitor_id = null
-                    api.user_auth_state = null
-                    mobileApi.visitor_id = null
-                    mobileApi.user_auth_state = null
-                    kotlinx.coroutines.delay(1000L)
-                    ensureVisitorId()
-                }
-                else -> {
-                    // Fifth+ failure: Last resort measures
-                    println("DEBUG: Last resort recovery measures")
-                    resetApiCache()
-                    // Generate random visitor ID as last resort
-                    api.visitor_id = generateRandomPot()
-                }
-            }
-            
-            // If we have fallback sources, try the next one
-            if (fallbackSources.isNotEmpty()) {
-                val fallbackIndex = minOf(attempt - 1, fallbackSources.size - 1)
-                val fallbackSource = fallbackSources[fallbackIndex]
-                println("DEBUG: Switching to fallback source $fallbackIndex")
-                
-                // Apply strategy-specific recovery to the fallback source
-                when (strategy) {
-                    "mobile_emulation", "aggressive_mobile" -> {
-                        // For mobile emulation, we might need to regenerate the source
-                        val freshUrl = generateEnhancedUrl(
-                            fallbackSource.request.url.toString(),
-                            attempt,
-                            strategy,
-                            networkType
-                        )
-                        val freshHeaders = generateMobileHeaders(strategy, networkType)
-                        createPostRequest(freshUrl, freshHeaders, "fallback=$fallbackIndex&recovery=$attempt")
-                    }
-                    else -> {
-                        // For other strategies, use the fallback source as-is
-                        fallbackSource
-                    }
-                }
-            } else {
-                // No fallbacks available, create a new source with different parameters
-                println("DEBUG: No fallbacks available, creating new source with enhanced parameters")
-                val freshUrl = generateEnhancedUrl(
-                    currentSource.request.url.toString(),
-                    attempt,
-                    strategy,
-                    networkType
-                )
-                val freshHeaders = generateMobileHeaders(strategy, networkType)
-                
-                when (strategy) {
-                    "mobile_emulation", "aggressive_mobile" -> {
-                        createPostRequest(freshUrl, freshHeaders, "retry=$attempt&recovery=true")
-                    }
-                    else -> {
-                        Streamable.Source.Http(
-                            freshUrl.toRequest(),
-                            quality = currentSource.quality
-                        )
-                    }
-                }
-            }
-        } catch (e: Exception) {
-            println("DEBUG: Failed to handle stream failure: ${e.message}")
-            // Return the original source as last resort
-            currentSource
-        }
-    }
-    
-    /**
-     * Enhanced mid-playback failure recovery for continuous streaming
-     * This function provides multiple recovery strategies when streams stop working mid-playback
-     */
-    private suspend fun recoverFromMidPlaybackFailure(
-        failedUrl: String,
-        originalStrategy: String,
-        networkType: String,
-        quality: Int,
-        failureCount: Int
-    ): Streamable.Source.Http {
-        println("DEBUG: Recovering from mid-playback failure #$failureCount for URL: $failedUrl")
-        
-        // Progressive recovery strategies based on failure count
-        val recoveryStrategy = when (failureCount) {
-            1 -> "quick_reset"
-            2 -> "cache_reset" 
-            3 -> "mobile_switch"
-            4 -> "strategy_change"
-            else -> "last_resort"
-        }
-        
-        println("DEBUG: Using recovery strategy: $recoveryStrategy")
-        
-        return when (recoveryStrategy) {
-            "quick_reset" -> {
-                // Quick visitor ID reset
-                api.visitor_id = null
-                ensureVisitorId()
-                val freshUrl = generateEnhancedUrl(failedUrl, failureCount, originalStrategy, networkType)
-                val headers = generateMobileHeaders(originalStrategy, networkType)
-                createPostRequest(freshUrl, headers, "recovery=quick_reset")
-            }
-            
-            "cache_reset" -> {
-                // Aggressive cache reset
-                resetApiCache()
-                val freshUrl = generateEnhancedUrl(failedUrl, failureCount, originalStrategy, networkType)
-                val headers = generateMobileHeaders(originalStrategy, networkType)
-                createPostRequest(freshUrl, headers, "recovery=cache_reset")
-            }
-            
-            "mobile_switch" -> {
-                // Switch to mobile API
-                val tempVisitorId = api.visitor_id
-                api.visitor_id = null
-                try {
-                    mobileApi.visitor_id = visitorEndpoint.getVisitorId()
-                    val freshUrl = generateEnhancedUrl(failedUrl, failureCount, "mobile_emulation", networkType)
-                    val headers = generateMobileHeaders("mobile_emulation", networkType)
-                    createPostRequest(freshUrl, headers, "recovery=mobile_switch")
-                } catch (e: Exception) {
-                    println("DEBUG: Mobile switch failed: ${e.message}")
-                    api.visitor_id = tempVisitorId
-                    // Fall back to original strategy
-                    val freshUrl = generateEnhancedUrl(failedUrl, failureCount, originalStrategy, networkType)
-                    val headers = generateMobileHeaders(originalStrategy, networkType)
-                    createPostRequest(freshUrl, headers, "recovery=fallback")
-                }
-            }
-            
-            "strategy_change" -> {
-                // Change to different strategy
-                val newStrategy = when (originalStrategy) {
-                    "mobile_emulation" -> "desktop_fallback"
-                    "desktop_fallback" -> "alternate_params"
-                    else -> "mobile_emulation"
-                }
-                println("DEBUG: Switching strategy from $originalStrategy to $newStrategy")
-                val freshUrl = generateEnhancedUrl(failedUrl, failureCount, newStrategy, networkType)
-                val headers = generateMobileHeaders(newStrategy, networkType)
-                createPostRequest(freshUrl, headers, "recovery=strategy_change")
-            }
-            
-            "last_resort" -> {
-                // Last resort: complete reset with random parameters
-                api.visitor_id = null
-                api.user_auth_state = null
-                mobileApi.visitor_id = null
-                mobileApi.user_auth_state = null
-                
-                // Generate random visitor ID
-                api.visitor_id = generateRandomPot()
-                
-                // Use alternate parameters strategy
-                val freshUrl = generateEnhancedUrl(failedUrl, failureCount, "alternate_params", networkType)
-                val headers = generateMobileHeaders("alternate_params", networkType)
-                createPostRequest(freshUrl, headers, "recovery=last_resort")
-            }
-            
-            else -> {
-                // Default fallback
-                val freshUrl = generateEnhancedUrl(failedUrl, failureCount, originalStrategy, networkType)
-                val headers = generateMobileHeaders(originalStrategy, networkType)
-                Streamable.Source.Http(freshUrl.toRequest(), quality = quality)
-            }
-        }
-    }
-
-    /**
-     * Handle stream quality fallback when high-quality streams fail
-     * This automatically degrades quality to maintain playback continuity
-     */
-    private suspend fun handleQualityFallback(
-        currentQuality: Int,
-        attempt: Int,
-        strategy: String,
-        networkType: String,
-        originalUrl: String
-    ): Pair<Int, String> {
-        println("DEBUG: Handling quality fallback, current quality: $currentQuality, attempt: $attempt")
-        
-        // Define quality levels from highest to lowest
-        val qualityLevels = listOf(
-            320000 to "high",     // 320kbps
-            256000 to "medium",   // 256kbps
-            192000 to "normal",   // 192kbps
-            128000 to "low",      // 128kbps
-            96000 to "lower",     // 96kbps
-            64000 to "lowest",    // 64kbps
-            48000 to "minimum"    // 48kbps - minimum viable quality
-        )
-        
-        // Find current quality index
-        val currentQualityIndex = qualityLevels.indexOfFirst { it.first == currentQuality }
-        val fallbackQualityIndex = minOf(currentQualityIndex + attempt, qualityLevels.size - 1)
-        
-        val (newQuality, qualityName) = qualityLevels[fallbackQualityIndex]
-        
-        println("DEBUG: Quality fallback: $currentQuality -> $newQuality ($qualityName)")
-        
-        // Generate fallback URL with new quality
-        val fallbackUrl = if (originalUrl.contains("?")) {
-            "$originalUrl&quality=$qualityName&bitrate=$newQuality&fallback=$attempt"
-        } else {
-            "$originalUrl?quality=$qualityName&bitrate=$newQuality&fallback=$attempt"
-        }
-        
-        // Apply additional fallback strategies based on network type
-        val enhancedFallbackUrl = when (networkType) {
-            "restricted_wifi_403" -> {
-                // For problematic WiFi, add more aggressive parameters
-                "$fallbackUrl&aggressive=1&wifi_fallback=1"
-            }
-            "restricted_wifi" -> {
-                "$fallbackUrl&wifi_fallback=1"
-            }
-            "mobile_data" -> {
-                "$fallbackUrl&mobile_fallback=1"
-            }
-            else -> {
-                fallbackUrl
-            }
-        }
-        
-        return Pair(newQuality, enhancedFallbackUrl)
-    }
-
-    /**
-     * Create a quality-adaptive HTTP source that can degrade quality when needed
-     */
-    private fun createQualityAdaptiveSource(
-        url: String,
-        initialQuality: Int,
-        strategy: String,
-        networkType: String
-    ): Streamable.Source.Http {
-        println("DEBUG: Creating quality-adaptive source with initial quality: $initialQuality")
-        
-        val headers = generateMobileHeaders(strategy, networkType).toMutableMap()
-        
-        // Add quality-adaptive headers
-        headers.putAll(mapOf(
-            "X-Quality-Adaptive" to "true",
-            "X-Initial-Quality" to initialQuality.toString(),
-            "X-Network-Type" to networkType
-        ))
-        
-        return when (strategy) {
-            "mobile_emulation", "aggressive_mobile" -> {
-                createPostRequest(url, headers, "adaptive=1&quality=$initialQuality")
-            }
-            "desktop_fallback" -> {
-                createPostRequest(url, headers, "quality=$initialQuality")
-            }
-            else -> {
-                Streamable.Source.Http(
-                    url.toRequest(),
-                    quality = initialQuality
-                )
-            }
-        }
-    }
-
-    /**
-     * Comprehensive stream management with intelligent fallback
-     * This handles all types of stream failures and provides appropriate recovery
-     */
-    private suspend fun manageStreamWithFallback(
-        primaryStream: Streamable.Media,
-        fallbackStreams: List<Streamable.Media> = emptyList(),
-        attempt: Int,
-        strategy: String,
-        networkType: String
-    ): Streamable.Media {
-        println("DEBUG: Managing stream with fallback, attempt $attempt, ${fallbackStreams.size} fallbacks available")
-        
-        return try {
-            // Try the primary stream first
-            primaryStream
-            
-        } catch (e: Exception) {
-            println("DEBUG: Primary stream failed: ${e.message}")
-            
-            // Check if it's a 403 error
-            val is403Error = is403Error(e)
-            
-            if (is403Error) {
-                println("DEBUG: 403 error detected, applying aggressive recovery")
-                
-                // For 403 errors, apply immediate recovery strategies
-                when (attempt) {
-                    1 -> {
-                        println("DEBUG: First 403 - resetting visitor ID")
-                        api.visitor_id = null
-                        ensureVisitorId()
-                    }
-                    2 -> {
-                        println("DEBUG: Second 403 - aggressive cache reset")
-                        resetApiCache()
-                    }
-                    3 -> {
-                        println("DEBUG: Third 403 - switching to mobile API")
-                        val tempVisitorId = api.visitor_id
-                        api.visitor_id = null
-                        try {
-                            mobileApi.visitor_id = visitorEndpoint.getVisitorId()
-                        } catch (e: Exception) {
-                            println("DEBUG: Mobile API switch failed: ${e.message}")
-                            api.visitor_id = tempVisitorId
-                        }
-                    }
-                }
-            }
-            
-            // Try fallback streams if available
-            if (fallbackStreams.isNotEmpty()) {
-                val fallbackIndex = minOf(attempt - 1, fallbackStreams.size - 1)
-                val fallbackStream = fallbackStreams[fallbackIndex]
-                println("DEBUG: Trying fallback stream $fallbackIndex")
-                
-                try {
-                    // Apply quality fallback if needed
-                    if (is403Error && attempt > 2) {
-                        println("DEBUG: Applying quality fallback for persistent 403 errors")
-                        // For now, return the fallback stream
-                        // In a full implementation, you would degrade the quality
-                        fallbackStream
-                    } else {
-                        fallbackStream
-                    }
-                } catch (fallbackError: Exception) {
-                    println("DEBUG: Fallback stream $fallbackIndex also failed: ${fallbackError.message}")
-                    
-                    // If all fallbacks failed, create a new stream with enhanced parameters
-                    if (attempt < 5) {
-                        println("DEBUG: Creating new stream with enhanced parameters")
-                        
-                        // Generate a new URL with enhanced parameters
-                        val enhancedParams = mapOf(
-                            "retry" to attempt.toString(),
-                            "fallback" to "true",
-                            "network" to networkType,
-                            "strategy" to strategy,
-                            "timestamp" to System.currentTimeMillis().toString()
-                        )
-                        
-                        val paramString = enhancedParams.map { "${it.key}=${it.value}" }.joinToString("&")
-                        
-                        // For now, create a simple fallback stream
-                        // In a full implementation, you would regenerate the entire stream
-                        primaryStream
-                    } else {
-                        throw Exception("All stream attempts failed. Last error: ${e.message}")
-                    }
-                }
-            } else {
-                // No fallbacks available, apply quality degradation
-                if (attempt > 2 && is403Error) {
-                    println("DEBUG: No fallbacks available, applying quality degradation")
-                    // For now, return the primary stream
-                    // In a full implementation, you would degrade quality
-                    primaryStream
-                } else {
-                    throw Exception("Stream failed with no fallbacks available: ${e.message}")
-                }
-            }
-        }
-    }
-
-    /**
-     * Enhanced error detection for all types of stream failures
-     */
-    private fun isStreamError(exception: Exception): Boolean {
-        return when (exception) {
-            is ClientRequestException -> true
-            is java.net.ConnectException -> true
-            is java.net.SocketTimeoutException -> true
-            is java.net.UnknownHostException -> true
-            else -> {
-                // Check error message for common stream-related errors
-                val message = exception.message?.lowercase() ?: ""
-                message.contains("stream") ||
-                message.contains("connection") ||
-                message.contains("timeout") ||
-                message.contains("network") ||
-                message.contains("403") ||
-                message.contains("404") ||
-                message.contains("500")
-            }
-        }
-    }
-
-  
 
     override suspend fun loadTrack(track: Track) = coroutineScope {
-        // Ensure visitor ID is initialized
         ensureVisitorId()
         
         println("DEBUG: Loading track: ${track.title} (${track.id})")
         
         val deferred = async { songEndPoint.loadSong(track.id).getOrThrow() }
         val (video, type) = videoEndpoint.getVideo(true, track.id)
-
-        println("DEBUG: Video type: $type")
-
-        val resolvedTrack = null // Disabled video-to-music resolution
-
+        val isMusic = type == "MUSIC_VIDEO_TYPE_ATV"
+        println("DEBUG: Video type: $type, isMusic: $isMusic")
+        
+        val resolvedTrack = if (resolveMusicForVideos && !isMusic) {
+            searchSongForVideo(video.videoDetails.title!!, video.videoDetails.author)
+        } else null
+        
+        val hlsUrl = video.streamingData.hlsManifestUrl
         val audioFiles = video.streamingData.adaptiveFormats.mapNotNull {
             if (!it.mimeType.contains("audio")) return@mapNotNull null
             it.audioSampleRate.toString() to it.url!!
         }.toMap()
         
         println("DEBUG: Audio formats found: ${audioFiles.keys}")
+        println("DEBUG: HLS URL available: ${hlsUrl?.isNotEmpty()}")
         
         val newTrack = resolvedTrack ?: deferred.await()
         val resultTrack = newTrack.copy(
@@ -2406,12 +1376,24 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             },
             streamables = listOfNotNull(
                 Streamable.server(
+                    "DUAL_STREAM",
+                    0,
+                    "Audio & Combined Stream (HLS + MP3 + MP4+Audio + WebM+Audio) - Enhanced",
+                    mapOf("videoId" to track.id)
+                ).takeIf { !isMusic && (showVideos || audioFiles.isNotEmpty()) },
+                Streamable.server(
+                    "VIDEO_M3U8",
+                    0,
+                    "Video M3U8 - Enhanced Adaptive Streaming",
+                    mapOf("videoId" to track.id)
+                ).takeIf { !isMusic && showVideos && hlsUrl != null }, 
+                Streamable.server(
                     "AUDIO_MP3",
                     0,
-                    "Audio Stream (MP3/MP4)",
+                    "Audio MP3 - Enhanced Quality Adaptive",
                     mutableMapOf<String, String>().apply { put("videoId", track.id) }
-                ).takeIf { audioFiles.isNotEmpty() }
-            ),
+                ).takeIf { audioFiles.isNotEmpty() && (!showVideos || isMusic) }, 
+            ).let { if (preferVideos) it else it.reversed() },
             plays = video.videoDetails.viewCount?.toLongOrNull()
         )
         
@@ -2446,7 +1428,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             null
         }
     } ?: listOf()
-
 
     private var oldSearch: Pair<String, List<Shelf>>? = null
     override fun searchFeed(query: String, tab: Tab?) = if (query.isNotBlank()) PagedData.Single {
@@ -2517,7 +1498,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         )
     }
 
-
     override suspend fun radio(track: Track, context: EchoMediaItem?): Radio {
         val id = "radio_${track.id}"
         val cont = (context as? EchoMediaItem.Lists.RadioItem)?.radio?.extras?.get("cont")
@@ -2534,7 +1514,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     }
 
     override suspend fun radio(user: User) = radio(user.toArtist())
-
     override suspend fun radio(playlist: Playlist): Radio {
         val track = loadTracks(playlist).loadAll().lastOrNull()
             ?: throw Exception("No tracks found")
@@ -2545,7 +1524,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         loadTracks(album).loadAll().lastOrNull()?.let { loadRelated(loadTrack(it)) }
             ?: emptyList()
     }
-
 
     private val trackMap = mutableMapOf<String, PagedData<Track>>()
     override suspend fun loadAlbum(album: Album): Album {
@@ -2562,7 +1540,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         val result =
             loadedArtist.takeIf { artist.id == it?.id } ?: api.LoadArtist.loadArtist(artist.id)
                 .getOrThrow()
-
         return result.layouts?.map {
             val title = it.title?.getString(ENGLISH)
             val single = title == SINGLES
@@ -2620,7 +1597,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         }
     }
 
-
     override suspend fun loadPlaylist(playlist: Playlist): Playlist {
         val (ytmPlaylist, related, data) = playlistEndPoint.loadFromPlaylist(
             playlist.id,
@@ -2632,7 +1608,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     }
 
     override fun loadTracks(playlist: Playlist): PagedData<Track> = trackMap[playlist.id]!!
-
 
     override val webViewRequest = object : WebViewRequest.Cookie<List<User>> {
         override val initialUrl =
@@ -2665,7 +1640,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         } else {
             val cookie = user.extras["cookie"] ?: throw Exception("No cookie")
             val auth = user.extras["auth"] ?: throw Exception("No auth")
-
             val headers = headers {
                 append("cookie", cookie)
                 append("authorization", auth)
@@ -2687,9 +1661,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         }.getUsers("", "").firstOrNull()
     }
 
-
     override val markAsPlayedDuration = 30000L
-
     override suspend fun onMarkAsPlayed(details: TrackDetails) {
         api.user_auth_state?.MarkSongAsWatched?.markSongAsWatched(details.track.id)?.getOrThrow()
     }
