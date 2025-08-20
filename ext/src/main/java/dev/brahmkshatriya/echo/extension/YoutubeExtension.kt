@@ -70,7 +70,6 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.encodeToString
 import java.security.MessageDigest
-import kotlin.text.Regex
 
 class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFeedClient,
     RadioClient, AlbumClient, ArtistClient, UserClient, PlaylistClient, LoginClient.WebView,
@@ -101,8 +100,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     private lateinit var settings: Settings
     override fun setSettings(settings: Settings) {
         this.settings = settings
-        // Configure HTTP client for streaming when settings are set
-        configureHttpClientForStreaming()
     }
 
     val api = YoutubeiApi(
@@ -114,7 +111,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         data_language = "en"
     )
     
-    // Ensure visitor ID is initialized before any API calls - Enhanced with authentication validation
+    // Ensure visitor ID is initialized before any API calls
     private suspend fun ensureVisitorId() {
         try {
             println("DEBUG: Checking visitor ID, current: ${api.visitor_id}")
@@ -126,16 +123,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     try {
                         api.visitor_id = visitorEndpoint.getVisitorId()
                         println("DEBUG: Got visitor ID on attempt $attempt: ${api.visitor_id}")
-                        
-                        // Validate the visitor ID by testing authentication
-                        val authHeaders = extractAuthenticationHeaders()
-                        if (authHeaders.containsKey("X-Goog-Visitor-Id")) {
-                            println("DEBUG: Visitor ID authentication validated")
-                            return
-                        } else {
-                            println("DEBUG: Visitor ID authentication failed, retrying...")
-                            api.visitor_id = null
-                        }
+                        return
                     } catch (e: Exception) {
                         visitorError = e
                         println("DEBUG: Visitor ID attempt $attempt failed: ${e.message}")
@@ -147,14 +135,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 throw visitorError ?: Exception("Failed to get visitor ID after 3 attempts")
             } else {
                 println("DEBUG: Visitor ID already exists: ${api.visitor_id}")
-                
-                // Periodically validate authentication
-                val authHeaders = extractAuthenticationHeaders()
-                if (!authHeaders.containsKey("Authorization")) {
-                    println("DEBUG: Authentication validation failed, resetting visitor ID")
-                    api.visitor_id = null
-                    ensureVisitorId() // Recursive call to get fresh visitor ID
-                }
             }
         } catch (e: Exception) {
             println("DEBUG: Failed to initialize visitor ID: ${e.message}")
@@ -325,7 +305,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.6099.230 Safari/537.36"
         )
         
-        // Real YouTube Music headers based on intercepted traffic - Enhanced with authentication
+        // Real YouTube Music headers based on intercepted traffic
         val YOUTUBE_MUSIC_HEADERS = mapOf(
             "Accept" to "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
             "Accept-Language" to "en-US,en;q=0.9",
@@ -340,18 +320,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             "Sec-Fetch-User" to "?1",
             "Upgrade-Insecure-Requests" to "1",
             "User-Agent" to MOBILE_USER_AGENTS[0] // Default to first mobile agent
-        )
-        
-        // Enhanced authentication headers extracted from real traffic
-        val AUTHENTICATION_HEADERS = mapOf(
-            "X-Browser-Channel" to "stable",
-            "X-Browser-Copyright" to "Copyright 2025 Google LLC. All rights reserved.",
-            "X-Browser-Year" to "2025",
-            "X-YouTube-Client-Name" to "67",
-            "X-YouTube-Client-Version" to "1.20250811.03.00",
-            "X-YouTube-Page-Label" to "youtube.music.web.client_20250811_03_RC00",
-            "X-YouTube-Time-Zone" to "Asia/Calcutta",
-            "X-YouTube-Utc-Offset" to "330"
         )
     }
 
@@ -368,111 +336,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         Page(data, result.ctoken)
     }.toFeed()
 
-    /**
-     * Extract authentication headers from user session - Enhanced for WiFi compatibility
-     */
-    private fun extractAuthenticationHeaders(): Map<String, String> {
-        val authHeaders = mutableMapOf<String, String>()
-        
-        try {
-            // Extract visitor ID
-            api.visitor_id?.let { visitorId ->
-                authHeaders["X-Goog-Visitor-Id"] = visitorId
-                println("DEBUG: Added visitor ID: $visitorId")
-            }
-            
-            // Extract authentication state from API
-            val authState = api.user_auth_state
-            if (authState != null) {
-                // Add auth user ID
-                authHeaders["X-Goog-AuthUser"] = "0" // Default to first user
-                
-                // Extract cookies from auth state
-                val cookies = authState.headers["cookie"] ?: ""
-                if (cookies.isNotEmpty()) {
-                    // Extract SAPISID for authorization header
-                    val sapisidRegex = Regex("SAPISID=([^;]+)")
-                    val sapisidMatch = sapisidRegex.find(cookies)
-                    val sapisid = sapisidMatch?.groupValues?.get(1)
-                    
-                    if (sapisid != null) {
-                        // Generate SAPISIDHASH authorization header
-                        val timestamp = System.currentTimeMillis() / 1000
-                        val authString = "$timestamp $sapisid https://music.youtube.com"
-                        val authHash = java.security.MessageDigest.getInstance("SHA-1")
-                            .digest(authString.toByteArray())
-                            .joinToString("") { "%02x".format(it) }
-                        
-                        authHeaders["Authorization"] = "SAPISIDHASH ${timestamp}_$authHash"
-                        println("DEBUG: Generated SAPISIDHASH authorization")
-                    }
-                    
-                    // Extract other important cookies
-                    val loginInfoRegex = Regex("LOGIN_INFO=([^;]+)")
-                    val loginInfoMatch = loginInfoRegex.find(cookies)
-                    if (loginInfoMatch != null) {
-                        authHeaders["X-Login-Info"] = loginInfoMatch.groupValues[1]
-                    }
-                }
-                
-                // Extract X-Client-Data from headers
-                authState.headers["X-Client-Data"]?.let { clientData ->
-                    authHeaders["X-Client-Data"] = clientData
-                }
-                
-                // Extract browser validation
-                authState.headers["X-Browser-Validation"]?.let { browserValidation ->
-                    authHeaders["X-Browser-Validation"] = browserValidation
-                }
-            }
-            
-            // Add enhanced authentication headers
-            authHeaders.putAll(AUTHENTICATION_HEADERS)
-            
-            println("DEBUG: Extracted ${authHeaders.size} authentication headers")
-            return authHeaders
-            
-        } catch (e: Exception) {
-            println("DEBUG: Failed to extract authentication headers: ${e.message}")
-            // Return basic headers as fallback
-            return AUTHENTICATION_HEADERS.toMutableMap()
-        }
-    }
-    
-    /**
-     * Generate enhanced mobile headers with authentication for streaming requests
-     */
-    private fun generateAuthenticatedMobileHeaders(strategy: String, networkType: String): Map<String, String> {
-        val baseHeaders = generateMobileHeaders(strategy, networkType).toMutableMap()
-        
-        // Add authentication headers for WiFi compatibility
-        val authHeaders = try {
-            extractAuthenticationHeaders()
-        } catch (e: Exception) {
-            println("DEBUG: Failed to get auth headers, using fallback: ${e.message}")
-            emptyMap()
-        }
-        
-        baseHeaders.putAll(authHeaders)
-        
-        // Add network-specific headers
-        when (networkType) {
-            "restricted_wifi" -> {
-                // Additional headers for WiFi restrictions
-                baseHeaders["Sec-Fetch-Storage-Access"] = "active"
-                baseHeaders["Connection"] = "keep-alive"
-                baseHeaders["Accept-Encoding"] = "gzip, deflate, br, zstd"
-            }
-            "mobile_data" -> {
-                // Standard mobile data headers
-                baseHeaders["Connection"] = "keep-alive"
-                baseHeaders["Accept-Encoding"] = "gzip, deflate, br, zstd"
-            }
-        }
-        
-        return baseHeaders
-    }
-    
     /**
      * Enhanced network type detection with additional checks
      */
@@ -597,12 +460,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     /**
      * Create a POST request with enhanced headers based on real YouTube Music behavior
-     * Enhanced to properly handle authentication headers for WiFi compatibility
      */
     private fun createPostRequest(url: String, headers: Map<String, String>, body: String? = null): Streamable.Source.Http {
-        // Create a custom request that includes the authentication headers
-        // We'll modify the URL to include header information as parameters
-        // This is a workaround since the Streamable.Source.Http doesn't directly support custom headers
+        // For now, we'll use the URL approach but with enhanced headers
+        // In a full implementation, you might need to modify the underlying HTTP client
+        // to actually send POST requests with the specified body
         
         val enhancedUrl = if (body != null) {
             // Add body parameters as URL parameters for GET request
@@ -615,65 +477,26 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             url
         }
         
-        // Add authentication headers as URL parameters to ensure they're included
-        val authParams = mutableListOf<String>()
+        // Add enhanced headers to the request
+        val finalHeaders = headers.toMutableMap()
+        finalHeaders.putAll(YOUTUBE_MUSIC_HEADERS)
         
-        // Add critical authentication headers as URL parameters
-        headers["Authorization"]?.let { auth ->
-            authParams.add("auth=${java.net.URLEncoder.encode(auth, "UTF-8")}")
-        }
+        // Add headers to the request - this depends on how the Request class handles headers
+        // For now, we'll add them as URL parameters to simulate header behavior
+        val headerString = finalHeaders.map { (key, value) ->
+            "${key.hashCode()}=${value.hashCode()}"
+        }.joinToString("&")
         
-        headers["X-Goog-Visitor-Id"]?.let { visitorId ->
-            authParams.add("visitor=${java.net.URLEncoder.encode(visitorId, "UTF-8")}")
-        }
-        
-        headers["X-Goog-AuthUser"]?.let { authUser ->
-            authParams.add("auth_user=${java.net.URLEncoder.encode(authUser, "UTF-8")}")
-        }
-        
-        headers["X-Client-Data"]?.let { clientData ->
-            authParams.add("client_data=${java.net.URLEncoder.encode(clientData, "UTF-8")}")
-        }
-        
-        // Add timestamp and random parameters to mimic real requests
-        val timestamp = System.currentTimeMillis()
-        val random = java.util.Random().nextInt(1000000)
-        authParams.add("t=$timestamp")
-        authParams.add("r=$random")
-        
-        // Build the final URL with authentication parameters
-        val finalUrl = if (authParams.isNotEmpty()) {
-            if (enhancedUrl.contains("?")) {
-                "$enhancedUrl&${authParams.joinToString("&")}"
-            } else {
-                "$enhancedUrl?${authParams.joinToString("&")}"
-            }
+        val finalUrl = if (enhancedUrl.contains("?")) {
+            "$enhancedUrl&headers=$headerString"
         } else {
-            enhancedUrl
+            "$enhancedUrl?headers=$headerString"
         }
-        
-        println("DEBUG: Created authenticated request to: ${finalUrl.take(100)}...")
         
         return Streamable.Source.Http(
             finalUrl.toRequest(),
             quality = 0 // Will be set by caller
         )
-    }
-    
-    /**
-     * Enhanced HTTP client configuration for streaming requests
-     * This configures the client to properly handle authentication headers
-     */
-    private fun configureHttpClientForStreaming() {
-        try {
-            // Configure the HTTP client to handle authentication headers properly
-            // This is where we would normally set up interceptors or custom headers
-            // For now, we'll rely on the URL parameter approach above
-            
-            println("DEBUG: Configured HTTP client for streaming with authentication")
-        } catch (e: Exception) {
-            println("DEBUG: Failed to configure HTTP client: ${e.message}")
-        }
     }
 
     override suspend fun loadStreamableMedia(
@@ -786,7 +609,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                         }
                                         
                                         val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
-                                        val headers = generateAuthenticatedMobileHeaders(strategy, networkType)
+                                        val headers = generateMobileHeaders(strategy, networkType)
                                         
                                         val audioSource = when (strategy) {
                                             "mobile_emulation", "aggressive_mobile" -> {
@@ -811,7 +634,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                         // Process video format (only if videos are enabled)
                                         val qualityValue = format.bitrate?.toInt() ?: 0
                                         val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
-                                        val headers = generateAuthenticatedMobileHeaders(strategy, networkType)
+                                        val headers = generateMobileHeaders(strategy, networkType)
                                         
                                         val videoSource = when (strategy) {
                                             "mobile_emulation", "aggressive_mobile" -> {
@@ -1034,7 +857,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                         // Process audio format for video stream
                                         val qualityValue = format.bitrate?.toInt() ?: 192000
                                         val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
-                                        val headers = generateAuthenticatedMobileHeaders(strategy, networkType)
+                                        val headers = generateMobileHeaders(strategy, networkType)
                                         
                                         val audioSource = when (strategy) {
                                             "mobile_emulation", "aggressive_mobile" -> {
@@ -1058,7 +881,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                         // Process video format
                                         val qualityValue = format.bitrate?.toInt() ?: 0
                                         val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
-                                        val headers = generateAuthenticatedMobileHeaders(strategy, networkType)
+                                        val headers = generateMobileHeaders(strategy, networkType)
                                         
                                         val videoSource = when (strategy) {
                                             "mobile_emulation", "aggressive_mobile" -> {
@@ -1330,8 +1153,8 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             val enhancedVideoUrl = generateEnhancedUrl(videoUrl, 1, strategy, networkType)
             
             // Generate headers for both streams
-            val audioHeaders = generateAuthenticatedMobileHeaders(strategy, networkType)
-            val videoHeaders = generateAuthenticatedMobileHeaders(strategy, networkType)
+            val audioHeaders = generateMobileHeaders(strategy, networkType)
+            val videoHeaders = generateMobileHeaders(strategy, networkType)
             
             // Create audio source
             val audioSource = when (strategy) {
