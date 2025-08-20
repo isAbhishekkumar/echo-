@@ -272,6 +272,58 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         return selectedSource
     }
 
+    /**
+     * Get the best audio source optimized for YouTube Music streaming
+     * Prioritizes YouTube Music Premium formats and high-quality codecs
+     */
+    private fun getBestAudioSourceForMusic(audioSources: List<Streamable.Source.Http>): Streamable.Source.Http? {
+        if (audioSources.isEmpty()) {
+            return null
+        }
+
+        println("DEBUG: Selecting best audio source for music streaming from ${audioSources.size} sources")
+        audioSources.forEach { source ->
+            println("DEBUG: Available audio source - bitrate: ${source.quality}")
+        }
+
+        // Priority order for YouTube Music:
+        // 1. YT Music Premium Opus 256k (774) - Best quality
+        // 2. AAC LC 256k (141) - Premium high quality
+        // 3. Opus 160k (251) - High quality Opus
+        // 4. AAC LC 128k (140) - Most common, good quality
+        // 5. Opus 70k (250) - Efficient quality
+        // 6. AAC HEv1 48k (139) - Low bandwidth
+        // 7. Opus 50k (249) - Lowest quality
+
+        val bestSource = audioSources.maxByOrNull { source ->
+            val quality = source.quality
+            
+            // Assign priority scores based on YouTube Music preferences
+            val priority = when {
+                // Highest priority: YT Music Premium Opus 256k
+                quality >= 256000 -> 100
+                // High priority: AAC LC 256k (Premium)
+                quality >= 200000 -> 90
+                // Good priority: Opus 160k
+                quality >= 160000 -> 80
+                // Standard priority: AAC LC 128k (most common)
+                quality >= 128000 -> 70
+                // Efficient priority: Opus 70k
+                quality >= 70000 -> 60
+                // Low bandwidth priority: AAC HEv1 48k
+                quality >= 48000 -> 50
+                // Lowest priority: Opus 50k and below
+                else -> 40
+            }
+            
+            println("DEBUG: Audio source bitrate $quality -> priority $priority")
+            priority
+        }
+
+        println("DEBUG: Selected best audio source for music with bitrate: ${bestSource?.quality}")
+        return bestSource
+    }
+
     private val language = ENGLISH
 
     private val visitorEndpoint = EchoVisitorEndpoint(api)
@@ -708,16 +760,17 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 val itag = format.itag ?: 0
                 
                 when (itag) {
-                        139, 140, 141, 171, 249, 250, 251 -> {
+                        // YouTube Music Core Audio Formats
+                        139, 140, 141, 249, 250, 251, 774 -> {
                         val qualityValue = format.bitrate?.toInt() ?: when (itag) {
-                            139 -> 48000.toInt()    // 48k AAC HEv1
-                            140 -> 128000.toInt()   // 128k AAC LC
-                            141 -> 256000.toInt()   // 256k AAC LC (Premium)
-                            171 -> 128000.toInt()   // 128k Vorbis
-                            249 -> 50000.toInt()    // 50k Opus
-                            250 -> 70000.toInt()    // 70k Opus
-                            251 -> 160000.toInt()   // 160k Opus
-                            else -> 192000.toInt()
+                            139 -> 48000.toInt()    // 48k AAC HEv1 (YT Music, DRC)
+                            140 -> 128000.toInt()   // 128k AAC LC (YT Music, DRC) - Most common
+                            141 -> 256000.toInt()   // 256k AAC LC (Premium only)
+                            249 -> 50000.toInt()    // 50k Opus (DRC)
+                            250 -> 70000.toInt()    // 70k Opus (DRC)
+                            251 -> 160000.toInt()   // 160k Opus (DRC) - High quality
+                            774 -> 256000.toInt()   // 256k Opus (YT Music Premium) - Best quality
+                            else -> 128000.toInt()
                         }
                         val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
                         
@@ -729,34 +782,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         )
                         audioSources.add(audioSource)
                         println("DEBUG: Added MPD audio source (itag: $itag, quality: $qualityValue)")
-                    }
-                    
-                    // Surround and special audio formats
-                    256, 258, 325, 327, 328, 338, 380, 599, 600, 773, 774 -> {
-                        val qualityValue = format.bitrate?.toInt() ?: when (itag) {
-                            256 -> 192000.toInt()   // AAC 5.1 192k
-                            258 -> 384000.toInt()   // AAC 5.1 384k
-                            325 -> 384000.toInt()   // DTSE 5.1 384k
-                            327 -> 256000.toInt()   // AAC 5.1 256k
-                            328 -> 384000.toInt()   // EAC3 5.1 384k
-                            338 -> 480000.toInt()   // Opus Ambisonic ~480k
-                            380 -> 384000.toInt()   // AC3 5.1 384k
-                            599 -> 30000.toInt()    // AAC HEv1 30k (discontinued)
-                            600 -> 35000.toInt()    // Opus 35k (discontinued)
-                            773 -> 900000.toInt()   // IAMF/Opus Binaural ~900k
-                            774 -> 256000.toInt()   // Opus Stereo 256k (YT Music Premium)
-                            else -> 192000.toInt()
-                        }
-                        val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
-                        
-                        val audioSource = createQualityAdaptiveSource(
-                            freshUrl,
-                            qualityValue,
-                            strategy,
-                            networkType
-                        )
-                        audioSources.add(audioSource)
-                        println("DEBUG: Added MPD special audio source (itag: $itag, quality: $qualityValue)")
                     }
                     
                     // Fallback audio detection by mime type
@@ -774,17 +799,13 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         println("DEBUG: Added MPD audio source by mime type (quality: $qualityValue, mimeType: $mimeType)")
                     }
                     
-                    // Standard video formats using itag codes
-                    133, 134, 135, 136, 137, 138, 160, 264, 266, 298, 299 -> {
+                    // Essential Music Video Formats (H.264)
+                    133, 134, 135, 136, 160 -> {
                         val qualityValue = format.bitrate?.toInt() ?: when (itag) {
-                            133, 160 -> 300000.toInt()    // 144p/240p H.264
-                            134 -> 500000.toInt()        // 360p H.264
-                            135 -> 1000000.toInt()       // 480p H.264
-                            136 -> 2000000.toInt()       // 720p H.264
-                            137, 264 -> 4000000.toInt()  // 1080p/1440p H.264
-                            138, 266 -> 8000000.toInt()  // 2160p/2160p60 H.264
-                            298 -> 3000000.toInt()       // 720p60 H.264
-                            299 -> 6000000.toInt()       // 1080p60 H.264
+                            133, 160 -> 300000.toInt()    // 144p/240p H.264 (basic)
+                            134 -> 500000.toInt()        // 360p H.264 (standard)
+                            135 -> 1000000.toInt()       // 480p H.264 (good)
+                            136 -> 2000000.toInt()       // 720p H.264 (HD)
                             else -> 500000.toInt()
                         }
                         val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
@@ -799,23 +820,12 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         println("DEBUG: Added MPD video source (itag: $itag, quality: $qualityValue)")
                     }
                     
-                    // VP9 video formats
-                    242, 243, 244, 245, 246, 247, 248, 271, 272, 278, 302, 303, 308, 313, 315 -> {
+                    // Efficient VP9 Music Video Formats
+                    243, 244, 247 -> {
                         val qualityValue = format.bitrate?.toInt() ?: when (itag) {
-                            242 -> 250000.toInt()        // 240p VP9
-                            243 -> 500000.toInt()        // 360p VP9
-                            244 -> 1000000.toInt()       // 480p VP9
-                            245, 246 -> 1500000.toInt()  // 480p VP9 (multiple variants)
-                            247 -> 2000000.toInt()       // 720p VP9
-                            248 -> 3000000.toInt()       // 1080p VP9
-                            271 -> 5000000.toInt()       // 1440p VP9
-                            272 -> 15000000.toInt()      // 4320p VP9
-                            278 -> 100000.toInt()        // 144p VP9 (alternative)
-                            302 -> 2500000.toInt()       // 720p60 VP9
-                            303 -> 5000000.toInt()       // 1080p60 VP9
-                            308 -> 8000000.toInt()       // 1440p60 VP9
-                            313 -> 20000000.toInt()      // 2160p VP9
-                            315 -> 35000000.toInt()      // 2160p60 VP9
+                            243 -> 500000.toInt()        // 360p VP9 (efficient)
+                            244 -> 1000000.toInt()       // 480p VP9 (efficient)
+                            247 -> 2000000.toInt()       // 720p VP9 (efficient HD)
                             else -> 1000000.toInt()
                         }
                         val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
@@ -828,32 +838,6 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                         )
                         videoSources.add(videoSource)
                         println("DEBUG: Added MPD VP9 video source (itag: $itag, quality: $qualityValue)")
-                    }
-                    
-                    // AV1 video formats
-                    394, 395, 396, 397, 398, 399, 400, 694, 695, 696, 697, 698, 699, 700, 701, 702 -> {
-                        val qualityValue = format.bitrate?.toInt() ?: when (itag) {
-                            394, 694 -> 100000.toInt()    // 144p AV1
-                            395, 695 -> 200000.toInt()    // 240p AV1
-                            396, 696 -> 400000.toInt()    // 360p AV1
-                            397, 697 -> 800000.toInt()    // 480p AV1
-                            398, 698 -> 1500000.toInt()   // 720p AV1
-                            399, 699 -> 3000000.toInt()   // 1080p AV1
-                            400, 700 -> 5000000.toInt()   // 1440p AV1
-                            701 -> 8000000.toInt()       // 2160p AV1
-                            702 -> 12000000.toInt()      // 4320p AV1
-                            else -> 2000000.toInt()
-                        }
-                        val freshUrl = generateEnhancedUrl(originalUrl, 1, strategy, networkType)
-                        
-                        val videoSource = createQualityAdaptiveSource(
-                            freshUrl,
-                            qualityValue,
-                            strategy,
-                            networkType
-                        )
-                        videoSources.add(videoSource)
-                        println("DEBUG: Added MPD AV1 video source (itag: $itag, quality: $qualityValue)")
                     }
                     
                     // Fallback video detection by mime type
@@ -877,7 +861,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             return when {
                 audioSources.isNotEmpty() && videoSources.isNotEmpty() -> {
                     println("DEBUG: Creating MPD stream with separate audio and video sources")
-                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                    val bestAudioSource = getBestAudioSourceForMusic(audioSources)
                     val bestVideoSource = videoSources.maxByOrNull { it.quality }
                     
                     if (bestAudioSource != null && bestVideoSource != null) {
@@ -892,7 +876,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                 
                 audioSources.isNotEmpty() -> {
                     println("DEBUG: MPD fallback to audio-only stream")
-                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                    val bestAudioSource = getBestAudioSourceForMusic(audioSources)
                     if (bestAudioSource != null) {
                         Streamable.Media.Server(listOf(bestAudioSource), merged = false)
                     } else {
@@ -1040,14 +1024,10 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 val originalUrl = format.url ?: return@forEach
                                 val itag = format.itag ?: 0
                                 
-                                // Categorize formats by type using comprehensive itag codes
+                                // Categorize formats by type using optimized itag codes for music app
                                 val isAudioFormat = when (itag) {
-                                    // Standard DASH audio itags
-                                    139, 140, 141, 171, 249, 250, 251 -> true
-                                    // Surround audio itags (rare)
-                                    256, 258, 327, 328, 380 -> true
-                                    // Special audio formats
-                                    325, 338, 599, 600, 773, 774 -> true
+                                    // YouTube Music Core Audio Formats
+                                    139, 140, 141, 249, 250, 251, 774 -> true
                                     // Also check mime type as fallback
                                     else -> when {
                                         mimeType.contains("audio/mp4") && !mimeType.contains("video") -> true
@@ -1058,16 +1038,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                                 
                                 val isVideoFormat = when (itag) {
-                                    // Standard DASH video itags (MP4/H.264)
-                                    133, 134, 135, 136, 137, 138, 160, 264, 266, 298, 299 -> true
-                                    // VP9 video itags
-                                    242, 243, 244, 245, 246, 247, 248, 271, 272, 278, 298, 299, 302, 303, 308, 313, 315 -> true
-                                    // AV1 video itags
-                                    394, 395, 396, 397, 398, 399, 400, 694, 695, 696, 697, 698, 699, 700, 701, 702 -> true
-                                    // Rare/legacy video formats
-                                    5, 6, 17, 18, 22, 34, 35, 36, 37, 38, 43, 44, 45, 46 -> true
-                                    // Extra rare formats
-                                    228, 779, 780, 788 -> true
+                                    // Essential Music Video Formats (H.264)
+                                    133, 134, 135, 136, 160 -> true
+                                    // Efficient VP9 Music Video Formats
+                                    243, 244, 247 -> true
+                                    // Also check mime type as fallback
                                     else -> when {
                                         mimeType.contains("video/mp4") && !mimeType.contains("audio") -> true
                                         mimeType.contains("video/webm") && !mimeType.contains("audio") -> true
@@ -1076,12 +1051,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 }
                                 
                                 val isCombinedFormat = when (itag) {
-                                    // Legacy combined formats
-                                    5, 6, 17, 18, 22, 34, 35, 36, 37, 38 -> true
-                                    // 3D combined formats
-                                    82, 83, 84, 85 -> true
-                                    // HLS combined formats
-                                    91, 92, 93, 94, 95, 96, 132, 151, 300, 301 -> true
+                                    // Essential combined formats for music videos
+                                    18, 22 -> true
+                                    // Also check mime type as fallback
                                     else -> when {
                                         mimeType.contains("video/mp4") && mimeType.contains("audio") -> true
                                         mimeType.contains("video/webm") && mimeType.contains("audio") -> true
@@ -1199,7 +1171,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 // Priority 2: Separate audio + video sources (requires merging) - only if both available
                                 preferVideos && videoSources.isNotEmpty() && audioSources.isNotEmpty() -> {
                                     println("DEBUG: Creating merged audio+video stream (separate sources)")
-                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                                    val bestAudioSource = getBestAudioSourceForMusic(audioSources)
                                     val bestVideoSource = getBestVideoSourceByQuality(videoSources, targetQuality)
                                     
                                     if (bestAudioSource != null && bestVideoSource != null) {
@@ -1209,7 +1181,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                         )
                                     } else {
                                         // Fallback to audio-only if either audio or video is missing
-                                        val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                                        val bestAudioSource = getBestAudioSourceForMusic(audioSources)
                                         if (bestAudioSource != null) {
                                             Streamable.Media.Server(listOf(bestAudioSource), false)
                                         } else {
@@ -1221,7 +1193,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 // Priority 3: Audio-only stream (fallback when no combined or separate audio+video available)
                                 audioSources.isNotEmpty() -> {
                                     println("DEBUG: Creating audio-only stream (no video sources available or videos disabled)")
-                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                                    val bestAudioSource = getBestAudioSourceForMusic(audioSources)
                                     if (bestAudioSource != null) {
                                         Streamable.Media.Server(listOf(bestAudioSource), false)
                                     } else {
@@ -1458,16 +1430,16 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 if (!mimeType.contains("audio")) return@forEach
                                 
                                 val qualityValue: Int = when (itag) {
-                                    // Use itag codes for precise quality identification
-                                    139, 140, 141, 171, 249, 250, 251 -> when (itag) {
-                                        139 -> 48000.toInt()    // 48k
-                                        140 -> 128000.toInt()   // 128k
-                                        141 -> 256000.toInt()   // 256k
-                                        171 -> 128000.toInt()   // 128k
-                                        249 -> 50000.toInt()    // 50k
-                                        250 -> 70000.toInt()    // 70k
-                                        251 -> 160000.toInt()   // 160k
-                                        else -> 192000.toInt()
+                                    // YouTube Music Core Audio Formats
+                                    139, 140, 141, 249, 250, 251, 774 -> when (itag) {
+                                        139 -> 48000.toInt()    // 48k AAC HEv1
+                                        140 -> 128000.toInt()   // 128k AAC LC - Most common
+                                        141 -> 256000.toInt()   // 256k AAC LC (Premium)
+                                        249 -> 50000.toInt()    // 50k Opus
+                                        250 -> 70000.toInt()    // 70k Opus
+                                        251 -> 160000.toInt()   // 160k Opus - High quality
+                                        774 -> 256000.toInt()   // 256k Opus (YT Music Premium) - Best quality
+                                        else -> 128000.toInt()
                                     }
                                     format.bitrate != null && format.bitrate > 0 -> {
                                         val baseBitrate = format.bitrate.toInt()
