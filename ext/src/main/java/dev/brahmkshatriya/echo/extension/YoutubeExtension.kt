@@ -964,7 +964,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                         if (showVideos) {
                                             val qualityValue: Int = when {
                                                 format.bitrate != null && format.bitrate > 0 -> format.bitrate.toInt()
-                                                format.height != null -> (format.height!! * 1000) + (format.bitrate?.toInt() ?: 0)
+                                                format.height != null -> ((format.height!! * 1000) + (format.bitrate?.toInt() ?: 0)).toInt()
                                                 else -> 500000 // Default combined quality
                                             }
                                             
