@@ -69,7 +69,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.serialization.encodeToString
 import java.security.MessageDigest
-import kotlin.math.minOf
+import kotlin.math.min
 
 class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFeedClient,
     RadioClient, AlbumClient, ArtistClient, UserClient, PlaylistClient, LoginClient.WebView,
@@ -900,20 +900,20 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 when {
                                     isAudioFormat -> {
                                         // Process audio-only format with quality-adaptive streaming
-                                        val qualityValue = when {
+                                        val qualityValue: Int = when {
                                             format.bitrate != null && format.bitrate > 0 -> {
                                                 val baseBitrate = format.bitrate.toInt()
                                                 when (networkType) {
-                                                    "restricted_wifi" -> minOf(baseBitrate, 128000)
-                                                    "mobile_data" -> minOf(baseBitrate, 192000)
+                                                    "restricted_wifi" -> min(baseBitrate, 128000)
+                                                    "mobile_data" -> min(baseBitrate, 192000)
                                                     else -> baseBitrate
                                                 }
                                             }
                                             format.audioSampleRate != null -> {
                                                 val sampleRate = format.audioSampleRate!!.toInt()
                                                 when (networkType) {
-                                                    "restricted_wifi" -> minOf(sampleRate, 128000)
-                                                    "mobile_data" -> minOf(sampleRate, 192000)
+                                                    "restricted_wifi" -> min(sampleRate, 128000)
+                                                    "mobile_data" -> min(sampleRate, 192000)
                                                     else -> sampleRate
                                                 }
                                             }
@@ -943,7 +943,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     isVideoFormat -> {
                                         // Process video-only format (only if videos are enabled) with quality-adaptive streaming
                                         if (showVideos) {
-                                            val qualityValue = format.bitrate?.toInt() ?: 0
+                                            val qualityValue: Int = format.bitrate?.toInt() ?: 0
                                             val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
                                             
                                             // Create quality-adaptive video source
@@ -962,7 +962,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                     isCombinedFormat -> {
                                         // Process combined format (audio + video in single stream)
                                         if (showVideos) {
-                                            val qualityValue = when {
+                                            val qualityValue: Int = when {
                                                 format.bitrate != null && format.bitrate > 0 -> format.bitrate.toInt()
                                                 format.height != null -> (format.height!! * 1000) + (format.bitrate?.toInt() ?: 0)
                                                 else -> 500000 // Default combined quality
@@ -1264,20 +1264,20 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 
                                 if (!mimeType.contains("audio")) return@forEach
                                 
-                                val qualityValue = when {
+                                val qualityValue: Int = when {
                                     format.bitrate != null && format.bitrate > 0 -> {
                                         val baseBitrate = format.bitrate.toInt()
                                         when (networkType) {
-                                            "restricted_wifi" -> minOf(baseBitrate, 128000)
-                                            "mobile_data" -> minOf(baseBitrate, 192000)
+                                            "restricted_wifi" -> min(baseBitrate, 128000)
+                                            "mobile_data" -> min(baseBitrate, 192000)
                                             else -> baseBitrate
                                         }
                                     }
                                     format.audioSampleRate != null -> {
                                         val sampleRate = format.audioSampleRate!!.toInt()
                                         when (networkType) {
-                                            "restricted_wifi" -> minOf(sampleRate, 128000)
-                                            "mobile_data" -> minOf(sampleRate, 192000)
+                                            "restricted_wifi" -> min(sampleRate, 128000)
+                                            "mobile_data" -> min(sampleRate, 192000)
                                             else -> sampleRate
                                         }
                                     }
