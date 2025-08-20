@@ -95,6 +95,24 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             "Allows videos to be available when playing stuff. Instead of disabling videos, change the streaming quality as Medium in the app settings to select audio only by default.",
             true
         ),
+        SettingSwitch(
+            "High Quality Audio",
+            "high_quality_audio",
+            "Prefer high quality audio formats (256kbps+) when available",
+            false
+        ),
+        SettingSwitch(
+            "Opus Audio Preferred",
+            "prefer_opus",
+            "Prefer Opus audio format over AAC for better efficiency",
+            true
+        ),
+        SettingSwitch(
+            "Adaptive Audio Quality",
+            "adaptive_audio",
+            "Automatically adjust audio quality based on network conditions",
+            true
+        )
     )
 
     private lateinit var settings: Settings
@@ -150,6 +168,15 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     private val showVideos
         get() = settings.getBoolean("show_videos") != false
+
+    private val highQualityAudio
+        get() = settings.getBoolean("high_quality_audio") == true
+
+    private val preferOpus
+        get() = settings.getBoolean("prefer_opus") != false
+
+    private val adaptiveAudio
+        get() = settings.getBoolean("adaptive_audio") != false
 
     /**
      * Get the target video quality based on app settings
@@ -269,6 +296,207 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         return selectedSource
     }
 
+    /**
+     * Get the target audio quality level based on user settings and network conditions
+     */
+    private fun getTargetAudioQuality(networkType: String): AudioQualityLevel {
+        return when {
+            // Adaptive audio quality based on network conditions
+            adaptiveAudio -> when (networkType) {
+                "restricted_wifi", "mobile_data" -> AudioQualityLevel.MEDIUM
+                "wifi", "ethernet" -> if (highQualityAudio) AudioQualityLevel.VERY_HIGH else AudioQualityLevel.HIGH
+                else -> AudioQualityLevel.MEDIUM
+            }
+            // User prefers high quality audio
+            highQualityAudio -> AudioQualityLevel.HIGH
+            // Default to medium quality
+            else -> AudioQualityLevel.MEDIUM
+        }
+    }
+
+    /**
+     * Parse YouTube format itag from URL or format data
+     */
+    private fun parseAudioFormatItag(format: Any?): Int? {
+        return try {
+            // Try to get itag from different possible sources
+            when (format) {
+                is Map<*, *> -> {
+                    // Handle format as map (common in some API responses)
+                    (format["itag"] as? Int?) ?: (format["format_id"] as? Int?) ?: (format["id"] as? Int?)
+                }
+                else -> {
+                    // Try reflection for other format types
+                    format?.javaClass?.getDeclaredField("itag")?.let { field ->
+                        field.isAccessible = true
+                        field.get(format) as? Int?
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            println("DEBUG: Failed to parse audio format itag: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Get the best audio source based on format priority and user preferences
+     */
+    private fun getBestAudioSource(audioSources: List<Streamable.Source.Http>, networkType: String): Streamable.Source.Http? {
+        if (audioSources.isEmpty()) {
+            return null
+        }
+
+        println("DEBUG: Selecting best audio source from ${audioSources.size} sources")
+        
+        // Group audio sources by format type (Opus vs AAC)
+        val opusSources = audioSources.filter { source ->
+            source.request.url.toString().contains("opus") || 
+            source.request.url.toString().contains("webm")
+        }
+        val aacSources = audioSources.filter { source ->
+            source.request.url.toString().contains("aac") || 
+            source.request.url.toString().contains("mp4")
+        }
+
+        println("DEBUG: Found ${opusSources.size} Opus sources and ${aacSources.size} AAC sources")
+
+        // Determine target quality level
+        val targetQuality = getTargetAudioQuality(networkType)
+        println("DEBUG: Target audio quality: $targetQuality")
+
+        // Select sources based on user preferences
+        val preferredSources = when {
+            preferOpus && opusSources.isNotEmpty() -> opusSources
+            aacSources.isNotEmpty() -> aacSources
+            opusSources.isNotEmpty() -> opusSources
+            else -> audioSources
+        }
+
+        println("DEBUG: Using ${if (preferOpus) "Opus" else "AAC"} preferred sources (${preferredSources.size} available)")
+
+        // Filter sources by target quality
+        val qualityFilteredSources = preferredSources.filter { source ->
+            val bitrate = source.quality
+            when (targetQuality) {
+                AudioQualityLevel.LOW -> bitrate <= targetQuality.maxBitrate
+                AudioQualityLevel.MEDIUM -> bitrate in targetQuality.minBitrate..targetQuality.maxBitrate
+                AudioQualityLevel.HIGH -> bitrate >= targetQuality.minBitrate
+                AudioQualityLevel.VERY_HIGH -> bitrate >= targetQuality.minBitrate
+            }
+        }
+
+        println("DEBUG: Quality-filtered sources: ${qualityFilteredSources.size}")
+
+        // Select the best source from filtered options
+        val bestSource = when {
+            qualityFilteredSources.isNotEmpty() -> {
+                // Within quality range, prefer highest bitrate
+                qualityFilteredSources.maxByOrNull { it.quality }
+            }
+            preferredSources.isNotEmpty() -> {
+                // Fallback to preferred sources within any quality
+                preferredSources.maxByOrNull { it.quality }
+            }
+            else -> {
+                // Final fallback to any available source
+                audioSources.maxByOrNull { it.quality }
+            }
+        }
+
+        println("DEBUG: Selected audio source with bitrate: ${bestSource?.quality}")
+        return bestSource
+    }
+
+    /**
+     * Enhanced audio format processing with YouTube format ID support
+     */
+    private fun processAudioFormat(format: Any, networkType: String): Streamable.Source.Http? {
+        try {
+            // Parse format itag
+            val itag = parseAudioFormatItag(format)
+            println("DEBUG: Processing audio format with itag: $itag")
+
+            if (itag == null) {
+                println("DEBUG: Could not parse itag, falling back to bitrate-based processing")
+                return null
+            }
+
+            // Check if this is a known audio format
+            val audioBitrate = AUDIO_FORMAT_BITRATES[itag]
+            if (audioBitrate == null) {
+                println("DEBUG: Unknown audio itag: $itag, skipping")
+                return null
+            }
+
+            // Check if format meets quality requirements
+            val targetQuality = getTargetAudioQuality(networkType)
+            val meetsQuality = when (targetQuality) {
+                AudioQualityLevel.LOW -> audioBitrate <= targetQuality.maxBitrate
+                AudioQualityLevel.MEDIUM -> audioBitrate in targetQuality.minBitrate..targetQuality.maxBitrate
+                AudioQualityLevel.HIGH -> audioBitrate >= targetQuality.minBitrate
+                AudioQualityLevel.VERY_HIGH -> audioBitrate >= targetQuality.minBitrate
+            }
+
+            if (!meetsQuality) {
+                println("DEBUG: Audio format $itag ($audioBitrate bps) does not meet quality requirements: $targetQuality")
+                return null
+            }
+
+            // Apply codec preference
+            val isOpus = itag in listOf(
+                AUDIO_OPUS_50KBPS, AUDIO_OPUS_70KBPS, AUDIO_OPUS_128KBPS,
+                AUDIO_OPUS_256KBPS, AUDIO_OPUS_480KBPS_AMBISONIC, AUDIO_OPUS_35KBPS
+            )
+            val isAac = itag in listOf(
+                AUDIO_AAC_HE_48KBPS, AUDIO_AAC_LC_128KBPS, AUDIO_AAC_LC_256KBPS,
+                AUDIO_AAC_HE_30KBPS, AUDIO_AAC_HE_192KBPS_5_1, AUDIO_AAC_LC_384KBPS_5_1,
+                AUDIO_AAC_LC_256KBPS_5_1
+            )
+
+            // Check codec preference
+            if (preferOpus && isAac && isOpus.not()) {
+                // Skip AAC if Opus is preferred and this is AAC
+                println("DEBUG: Skipping AAC format $itag (Opus preferred)")
+                return null
+            }
+
+            println("DEBUG: Audio format $itag ($audioBitrate bps) meets quality requirements: $targetQuality")
+
+            // Create the audio source
+            // Note: We'll need to extract the URL from the format object
+            // This is a placeholder - actual implementation depends on the format structure
+            return try {
+                val url = when (format) {
+                    is Map<*, *> -> format["url"] as? String
+                    else -> format.javaClass.getDeclaredField("url")?.let { field ->
+                        field.isAccessible = true
+                        field.get(format) as? String
+                    }
+                }
+
+                if (url != null) {
+                    Streamable.Source.Http(
+                        request = url.toRequest(),
+                        quality = audioBitrate
+                    ).also {
+                        println("DEBUG: Created audio source for itag $itag with bitrate $audioBitrate")
+                    }
+                } else {
+                    println("DEBUG: Could not extract URL for format $itag")
+                    null
+                }
+            } catch (e: Exception) {
+                println("DEBUG: Failed to create audio source for itag $itag: ${e.message}")
+                null
+            }
+
+        } catch (e: Exception) {
+            println("DEBUG: Error processing audio format: ${e.message}")
+            return null
+        }
+    }
+
     private val language = ENGLISH
 
     private val visitorEndpoint = EchoVisitorEndpoint(api)
@@ -290,6 +518,67 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
         const val ENGLISH = "en-GB"
         const val SINGLES = "Singles"
         const val SONGS = "songs"
+        
+        // YouTube Audio Format IDs (itag codes)
+        // MP4 AAC Formats
+        const val AUDIO_AAC_HE_48KBPS = 139    // AAC (HE v1) 48 Kbps - Low quality
+        const val AUDIO_AAC_LC_128KBPS = 140   // AAC (LC) 128 Kbps - Standard quality
+        const val AUDIO_AAC_LC_256KBPS = 141   // AAC (LC) 256 Kbps - High quality (rare)
+        const val AUDIO_AAC_HE_192KBPS_5_1 = 256 // AAC (HE v1) 192 Kbps 5.1 Surround
+        const val AUDIO_AAC_LC_384KBPS_5_1 = 258 // AAC (LC) 384 Kbps 5.1 Surround
+        const val AUDIO_AAC_LC_256KBPS_5_1 = 327 // AAC (LC) 256 Kbps 5.1 Surround
+        
+        // WebM Opus Formats
+        const val AUDIO_OPUS_50KBPS = 249     // Opus ~50 Kbps - Low quality, efficient
+        const val AUDIO_OPUS_70KBPS = 250     // Opus ~70 Kbps - Medium-low quality
+        const val AUDIO_OPUS_128KBPS = 251    // Opus ~128 Kbps - Good quality, efficient
+        const val AUDIO_OPUS_480KBPS_AMBISONIC = 338 // Opus ~480 Kbps Ambisonic (4)
+        const val AUDIO_OPUS_256KBPS = 774    // Opus ~256 Kbps - High quality (YT Music)
+        
+        // Other Audio Formats
+        const val AUDIO_AAC_HE_30KBPS = 599   // AAC (HE v1) 30 Kbps - Very low quality (deprecated)
+        const val AUDIO_OPUS_35KBPS = 600     // Opus ~35 Kbps - Very low quality (deprecated)
+        const val AUDIO_IAMF_900KBPS = 773    // IAMF (Opus) ~900 Kbps Binaural (7.1.4)
+        
+        // Audio Format Priority Order (best to worst)
+        val AUDIO_FORMAT_PRIORITY = listOf(
+            AUDIO_IAMF_900KBPS,        // Best: Immersive audio
+            AUDIO_OPUS_256KBPS,        // High quality Opus
+            AUDIO_AAC_LC_256KBPS,      // High quality AAC
+            AUDIO_OPUS_128KBPS,        // Good quality Opus
+            AUDIO_AAC_LC_128KBPS,      // Standard quality AAC
+            AUDIO_OPUS_70KBPS,         // Medium-low Opus
+            AUDIO_OPUS_50KBPS,         // Low quality Opus
+            AUDIO_AAC_HE_48KBPS,       // Low quality AAC
+            AUDIO_OPUS_35KBPS,         // Very low quality Opus (deprecated)
+            AUDIO_AAC_HE_30KBPS        // Very low quality AAC (deprecated)
+        )
+        
+        // Audio Format Bitrate Mapping (approximate)
+        val AUDIO_FORMAT_BITRATES = mapOf(
+            AUDIO_IAMF_900KBPS to 900000,
+            AUDIO_OPUS_256KBPS to 256000,
+            AUDIO_AAC_LC_256KBPS to 256000,
+            AUDIO_OPUS_128KBPS to 128000,
+            AUDIO_AAC_LC_128KBPS to 128000,
+            AUDIO_OPUS_70KBPS to 70000,
+            AUDIO_OPUS_50KBPS to 50000,
+            AUDIO_AAC_HE_48KBPS to 48000,
+            AUDIO_OPUS_35KBPS to 35000,
+            AUDIO_AAC_HE_30KBPS to 30000,
+            AUDIO_AAC_HE_192KBPS_5_1 to 192000,
+            AUDIO_AAC_LC_384KBPS_5_1 to 384000,
+            AUDIO_AAC_LC_256KBPS_5_1 to 256000,
+            AUDIO_OPUS_480KBPS_AMBISONIC to 480000
+        )
+        
+        // Audio Format Quality Levels
+        enum class AudioQualityLevel(val minBitrate: Int, val maxBitrate: Int) {
+            LOW(0, 64000),           // Up to 64 kbps
+            MEDIUM(64001, 128000),   // 64-128 kbps
+            HIGH(128001, 256000),    // 128-256 kbps
+            VERY_HIGH(256001, Int.MAX_VALUE) // 256+ kbps
+        }
         
         // Real mobile device User-Agents based on actual YouTube Music traffic
         val MOBILE_USER_AGENTS = listOf(
@@ -581,53 +870,65 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 
                                 when {
                                     isAudioFormat -> {
-                                        // Process audio format
-                                        val qualityValue = when {
-                                            format.bitrate > 0 -> {
-                                                val baseBitrate = format.bitrate.toInt()
-                                                when (networkType) {
-                                                    "restricted_wifi" -> minOf(baseBitrate, 128000)
-                                                    "mobile_data" -> minOf(baseBitrate, 192000)
-                                                    else -> baseBitrate
+                                        // Enhanced audio format processing with YouTube format ID support
+                                        println("DEBUG: Processing audio format: $mimeType")
+                                        
+                                        // Try to process with enhanced audio format selection first
+                                        val enhancedAudioSource = processAudioFormat(format, networkType)
+                                        if (enhancedAudioSource != null) {
+                                            audioSources.add(enhancedAudioSource)
+                                            println("DEBUG: Added enhanced audio source (quality: ${enhancedAudioSource.quality}, mimeType: $mimeType)")
+                                        } else {
+                                            // Fallback to legacy processing if enhanced processing fails
+                                            println("DEBUG: Enhanced processing failed, using fallback for: $mimeType")
+                                            
+                                            val qualityValue = when {
+                                                format.bitrate > 0 -> {
+                                                    val baseBitrate = format.bitrate.toInt()
+                                                    when (networkType) {
+                                                        "restricted_wifi" -> minOf(baseBitrate, 128000)
+                                                        "mobile_data" -> minOf(baseBitrate, 192000)
+                                                        else -> baseBitrate
+                                                    }
+                                                }
+                                                format.audioSampleRate != null -> {
+                                                    val sampleRate = format.audioSampleRate!!.toInt()
+                                                    when (networkType) {
+                                                        "restricted_wifi" -> minOf(sampleRate, 128000)
+                                                        "mobile_data" -> minOf(sampleRate, 192000)
+                                                        else -> sampleRate
+                                                    }
+                                                }
+                                                else -> {
+                                                    when (networkType) {
+                                                        "restricted_wifi" -> 96000
+                                                        "mobile_data" -> 128000
+                                                        else -> 192000
+                                                    }
                                                 }
                                             }
-                                            format.audioSampleRate != null -> {
-                                                val sampleRate = format.audioSampleRate!!.toInt()
-                                                when (networkType) {
-                                                    "restricted_wifi" -> minOf(sampleRate, 128000)
-                                                    "mobile_data" -> minOf(sampleRate, 192000)
-                                                    else -> sampleRate
+                                            
+                                            val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
+                                            val headers = generateMobileHeaders(strategy, networkType)
+                                            
+                                            val audioSource = when (strategy) {
+                                                "mobile_emulation", "aggressive_mobile" -> {
+                                                    createPostRequest(freshUrl, headers, "rn=1")
+                                                }
+                                                "desktop_fallback" -> {
+                                                    createPostRequest(freshUrl, headers, null)
+                                                }
+                                                else -> {
+                                                    Streamable.Source.Http(
+                                                        freshUrl.toRequest(),
+                                                        quality = qualityValue
+                                                    )
                                                 }
                                             }
-                                            else -> {
-                                                when (networkType) {
-                                                    "restricted_wifi" -> 96000
-                                                    "mobile_data" -> 128000
-                                                    else -> 192000
-                                                }
-                                            }
+                                            
+                                            audioSources.add(audioSource)
+                                            println("DEBUG: Added fallback audio source (quality: $qualityValue, mimeType: $mimeType)")
                                         }
-                                        
-                                        val freshUrl = generateEnhancedUrl(originalUrl, attempt, strategy, networkType)
-                                        val headers = generateMobileHeaders(strategy, networkType)
-                                        
-                                        val audioSource = when (strategy) {
-                                            "mobile_emulation", "aggressive_mobile" -> {
-                                                createPostRequest(freshUrl, headers, "rn=1")
-                                            }
-                                            "desktop_fallback" -> {
-                                                createPostRequest(freshUrl, headers, null)
-                                            }
-                                            else -> {
-                                                Streamable.Source.Http(
-                                                    freshUrl.toRequest(),
-                                                    quality = qualityValue
-                                                )
-                                            }
-                                        }
-                                        
-                                        audioSources.add(audioSource)
-                                        println("DEBUG: Added audio source (quality: $qualityValue, mimeType: $mimeType)")
                                     }
                                     
                                     isVideoFormat && showVideos -> {
@@ -684,7 +985,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 preferVideos && videoSources.isNotEmpty() && audioSources.isNotEmpty() -> {
                                     // User prefers videos and we have both audio and video sources
                                     println("DEBUG: Creating merged audio+video stream")
-                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                                    val bestAudioSource = getBestAudioSource(audioSources, networkType)
                                     val bestVideoSource = getBestVideoSourceByQuality(videoSources, targetQuality)
                                     
                                     if (bestAudioSource != null && bestVideoSource != null) {
@@ -694,9 +995,9 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                         )
                                     } else {
                                         // Fallback to audio-only
-                                        val bestAudioSource = audioSources.maxByOrNull { it.quality }
-                                        if (bestAudioSource != null) {
-                                            Streamable.Media.Server(listOf(bestAudioSource), false)
+                                        val fallbackAudioSource = getBestAudioSource(audioSources, networkType)
+                                        if (fallbackAudioSource != null) {
+                                            Streamable.Media.Server(listOf(fallbackAudioSource), false)
                                         } else {
                                             throw Exception("No valid audio sources found")
                                         }
@@ -706,7 +1007,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 showVideos && videoSources.isNotEmpty() && !preferVideos -> {
                                     // Videos are enabled but user prefers audio, still provide audio
                                     println("DEBUG: Creating audio stream (video sources available but not preferred)")
-                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                                    val bestAudioSource = getBestAudioSource(audioSources, networkType)
                                     if (bestAudioSource != null) {
                                         Streamable.Media.Server(listOf(bestAudioSource), false)
                                     } else {
@@ -717,7 +1018,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                                 audioSources.isNotEmpty() -> {
                                     // Audio-only mode or no video sources available
                                     println("DEBUG: Creating audio-only stream")
-                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                                    val bestAudioSource = getBestAudioSource(audioSources, networkType)
                                     if (bestAudioSource != null) {
                                         Streamable.Media.Server(listOf(bestAudioSource), false)
                                     } else {
@@ -910,7 +1211,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                             val resultMedia = when {
                                 videoSources.isNotEmpty() && audioSources.isNotEmpty() -> {
                                     println("DEBUG: Creating merged audio+video stream")
-                                    val bestAudioSource = audioSources.maxByOrNull { it.quality }
+                                    val bestAudioSource = getBestAudioSource(audioSources, networkType)
                                     val bestVideoSource = getBestVideoSourceByQuality(videoSources, targetQuality)
                                     
                                     if (bestAudioSource != null && bestVideoSource != null) {
