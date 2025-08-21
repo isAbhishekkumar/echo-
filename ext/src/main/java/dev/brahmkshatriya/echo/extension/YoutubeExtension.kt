@@ -257,12 +257,11 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             (f.get(format) as? Number)?.toLong()
         } catch (_: Exception) { null }
 
-        // Try direct properties first using Kotlin reflection-like access via exceptions
-        val url = try { format.javaClass.getDeclaredField("url").let { it.isAccessible = true; it.get(format) as? String } } catch (_: Exception) { null }
-        val mime = try { format.javaClass.getDeclaredField("mimeType").let { it.isAccessible = true; it.get(format)?.toString() ?: "" } } catch (_: Exception) { "" }
-        val bitrate = try { format.javaClass.getDeclaredField("bitrate").let { it.isAccessible = true; (it.get(format) as? Number)?.toLong() } } catch (_: Exception) { null }
-        val itag = getIntFieldOrNull("itag") // many models expose it
-        val height = getIntFieldOrNull("height") // video only
+        val url = getStringFieldOrNull("url")
+        val mime = getStringFieldOrNull("mimeType") ?: ""
+        val bitrate = getLongFieldOrNull("bitrate")
+        val itag = getIntFieldOrNull("itag")
+        val height = getIntFieldOrNull("height")
 
         return Fmt(
             itag = itag,
@@ -395,7 +394,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     override suspend fun loadTrack(track: Track) = coroutineScope {
         ensureVisitorId()
         val deferredInfo = async { songEndPoint.loadSong(track.id).getOrThrow() }
-        val (video, type) = videoEndpoint.getVideo(true, track.id)
+        val (video, _) = videoEndpoint.getVideo(true, track.id)
 
         val newTrack = deferredInfo.await()
         val resultTrack = newTrack.copy(
@@ -504,7 +503,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             id = id,
             title = "${artist.name} Radio",
             extras = mutableMapOf<String, String>().apply {
-                put("tracks", json.encodeToString(tracks))
+                put("tracks", kotlinx.serialization.json.Json.encodeToString(tracks))
             }
         )
     }
@@ -518,7 +517,7 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             id = id,
             title = "${track.title} Radio",
             extras = mutableMapOf<String, String>().apply {
-                put("tracks", json.encodeToString(tracks))
+                put("tracks", kotlinx.serialization.json.Json.encodeToString(tracks))
                 result.continuation?.let { put("cont", it) }
             }
         )
@@ -639,12 +638,16 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
                     .joinToString(separator = "") { eachByte -> "%02x".format(eachByte) }
                 "SAPISIDHASH ${currentTime}_${idHash}"
             }
-            val headersMap = mutableMapOf("cookie" to cookie, "authorization" to auth)
-            val headers = headers { headersMap.forEach { (t, u) -> append(t, u) } }
+
+            val authHeaders = io.ktor.http.headersOf(
+                "cookie" to listOf(cookie),
+                "authorization" to listOf(auth)
+            )
+
             return api.client.request("https://music.youtube.com/getAccountSwitcherEndpoint") {
                 headers {
                     append("referer", "https://music.youtube.com/")
-                    appendAll(headers)
+                    appendAll(authHeaders)
                 }
             }.getUsers(cookie, auth)
         }
@@ -657,23 +660,24 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
             val cookie = user.extras["cookie"] ?: throw Exception("No cookie")
             val auth = user.extras["auth"] ?: throw Exception("No auth")
 
-            val headers = headers {
-                append("cookie", cookie)
-                append("authorization", auth)
-            }
+            val authHeaders = io.ktor.http.headersOf(
+                "cookie" to listOf(cookie),
+                "authorization" to listOf(auth)
+            )
+
             val authenticationState =
-                YoutubeiAuthenticationState(api, headers, user.id.ifEmpty { null })
+                YoutubeiAuthenticationState(api, authHeaders, user.id.ifEmpty { null })
             api.user_auth_state = authenticationState
         }
         api.visitor_id = visitorEndpoint.getVisitorId()
     }
 
     override suspend fun getCurrentUser(): User? {
-        val headers = api.user_auth_state?.headers ?: return null
+        val authHeaders = api.user_auth_state?.headers ?: return null
         return api.client.request("https://music.youtube.com/getAccountSwitcherEndpoint") {
             headers {
                 append("referer", "https://music.youtube.com/")
-                appendAll(headers)
+                appendAll(authHeaders)
             }
         }.getUsers("", "").firstOrNull()
     }
