@@ -1894,37 +1894,74 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
     private suspend fun clearStreamingCache() {
         println("DEBUG: Clearing streaming cache")
         
-        // Clear visitor ID to force fresh session
+        // Clear visitor ID to force fresh session - this is the most effective method
         api.visitor_id = null
         mobileApi.visitor_id = null
-        
-        // Clear any cached authentication state
-        try {
-            api.authenticationState = null
-            mobileApi.authenticationState = null
-        } catch (e: Exception) {
-            println("DEBUG: Failed to clear authentication state: ${e.message}")
-        }
         
         // Force new visitor ID
         ensureVisitorId()
         
-        // Clear any internal client cache
+        // Clear any internal client cache using reflection (if available)
         try {
             val clientField = api::class.java.getDeclaredField("client")
             clientField.isAccessible = true
             val client = clientField.get(api)
-            val cacheField = client::class.java.getDeclaredField("cache")
-            cacheField.isAccessible = true
-            val cache = cacheField.get(client)
-            val clearMethod = cache::class.java.getDeclaredMethod("clear")
-            clearMethod.invoke(cache)
+            
+            // Try to clear cache through various possible methods
+            try {
+                val cacheField = client::class.java.getDeclaredField("cache")
+                cacheField.isAccessible = true
+                val cache = cacheField.get(client)
+                val clearMethod = cache::class.java.getDeclaredMethod("clear")
+                clearMethod.invoke(cache)
+                println("DEBUG: Cleared client cache through clear() method")
+            } catch (e: Exception) {
+                println("DEBUG: Could not clear cache through clear() method: ${e.message}")
+                
+                // Try alternative cache clearing methods
+                try {
+                    val engineField = client::class.java.getDeclaredField("engine")
+                    engineField.isAccessible = true
+                    val engine = engineField.get(client)
+                    
+                    val cacheManagerField = engine::class.java.getDeclaredField("cacheManager")
+                    cacheManagerField.isAccessible = true
+                    val cacheManager = cacheManagerField.get(engine)
+                    
+                    val clearCacheMethod = cacheManager::class.java.getDeclaredMethod("clear")
+                    clearCacheMethod.invoke(cacheManager)
+                    println("DEBUG: Cleared client cache through cache manager")
+                } catch (e2: Exception) {
+                    println("DEBUG: Could not clear cache through cache manager: ${e2.message}")
+                }
+            }
         } catch (e: Exception) {
-            println("DEBUG: Failed to clear client cache: ${e.message}")
+            println("DEBUG: Failed to access client for cache clearing: ${e.message}")
         }
+        
+        // Add a small delay to ensure cache clearing takes effect
+        kotlinx.coroutines.delay(100)
         
         lastCacheClearTime = System.currentTimeMillis()
         println("DEBUG: Cache cleared successfully")
+    }
+
+    // Alternative cache clearing method that doesn't rely on reflection
+    private suspend fun clearStreamingCacheSimple() {
+        println("DEBUG: Clearing streaming cache (simple method)")
+        
+        // The most effective cache clearing: reset visitor ID
+        api.visitor_id = null
+        mobileApi.visitor_id = null
+        
+        // Force new visitor ID - this creates a fresh session
+        ensureVisitorId()
+        
+        // Add a small delay to ensure the new visitor ID is established
+        kotlinx.coroutines.delay(200)
+        
+        lastCacheClearTime = System.currentTimeMillis()
+        println("DEBUG: Cache cleared successfully using simple method")
     }
 
     private fun shouldClearCache(networkType: String): Boolean {
@@ -1955,7 +1992,14 @@ class YoutubeExtension : ExtensionClient, HomeFeedClient, TrackClient, SearchFee
 
     private suspend fun checkAndClearCacheIfNeeded(networkType: String) {
         if (shouldClearCache(networkType)) {
-            clearStreamingCache()
+            try {
+                // Try the comprehensive cache clearing method first
+                clearStreamingCache()
+            } catch (e: Exception) {
+                println("DEBUG: Comprehensive cache clearing failed, using simple method: ${e.message}")
+                // Fall back to the simple method if reflection fails
+                clearStreamingCacheSimple()
+            }
             trackPlayCount = 0
         }
     }
